@@ -9,6 +9,7 @@ use App\Models\FollowUp;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use App\Support\Pagination;
 
@@ -209,83 +210,86 @@ class HospitalLetterController extends Controller
 
         $validated['created_by'] = Auth::id();
 
-        // Create Hospital Letter
-        $letter = HospitalLetter::create($validated);
+        $letter = DB::transaction(function () use ($validated, $referral): HospitalLetter {
+            // Create the hospital letter, referral changes, and follow-up as
+            // one unit so a follow-up failure cannot leave a partial case.
+            $letter = HospitalLetter::create($validated);
 
-        // Outcome-specific Follow-up data
-        switch ($validated['outcome']) {
-            case 'Follow-up':
-                $followupData = [
-                    'followup_date'   => $validated['followup_date'],
-                    'notes'           => $validated['content_summary'] ?? null,
-                    'followup_status' => 'Ongoing',
-                ];
-                break;
+            // Outcome-specific Follow-up data
+            switch ($validated['outcome']) {
+                case 'Follow-up':
+                    $followupData = [
+                        'followup_date'   => $validated['followup_date'],
+                        'notes'           => $validated['content_summary'] ?? null,
+                        'followup_status' => 'Ongoing',
+                    ];
+                    break;
 
-            case 'Finished':
-                $followupData = [
-                    'followup_date'   => $validated['followup_date'],
-                    'notes'           => $validated['content_summary'] ?? null,
-                    'followup_status' => 'Closed',
-                ];
-                break;
+                case 'Finished':
+                    $followupData = [
+                        'followup_date'   => $validated['followup_date'],
+                        'notes'           => $validated['content_summary'] ?? null,
+                        'followup_status' => 'Closed',
+                    ];
+                    break;
 
-            case 'Transferred':
-                $followupData = [
-                    'followup_date'   => $validated['followup_date'],
-                    'notes'           => $validated['content_summary'] ?? null,
-                    'followup_status' => 'Transferred',
-                    'hospital_id'     => $validated['hospital_id'],
-                    'patient_id'      => $referral->patient_id,
-                ];
-                break;
+                case 'Transferred':
+                    $followupData = [
+                        'followup_date'   => $validated['followup_date'],
+                        'notes'           => $validated['content_summary'] ?? null,
+                        'followup_status' => 'Transferred',
+                        'hospital_id'     => $validated['hospital_id'],
+                        'patient_id'      => $referral->patient_id,
+                    ];
+                    break;
 
-            case 'Death':
-                $followupData = [
-                    'followup_date'   => $validated['followup_date'],
-                    'notes'           => $validated['content_summary'] ?? null,
-                    'followup_status' => 'Closed',
-                ];
-                break;
+                case 'Death':
+                    $followupData = [
+                        'followup_date'   => $validated['followup_date'],
+                        'notes'           => $validated['content_summary'] ?? null,
+                        'followup_status' => 'Closed',
+                    ];
+                    break;
 
-            default:
-                // Safety fallback in case outcome is missing or invalid
-                $followupData = [
-                    'followup_date'   => $validated['followup_date'] ?? now()->toDateString(),
-                    'notes'           => $validated['content_summary'] ?? null,
-                    'followup_status' => 'Ongoing',
-                ];
-                break;
-        }
+                default:
+                    // Safety fallback in case outcome is missing or invalid
+                    $followupData = [
+                        'followup_date'   => $validated['followup_date'] ?? now()->toDateString(),
+                        'notes'           => $validated['content_summary'] ?? null,
+                        'followup_status' => 'Ongoing',
+                    ];
+                    break;
+            }
 
-        // Update referral status only for certain outcomes
-        if ($validated['outcome'] === 'Finished' || $validated['outcome'] === 'Death') {
-            $referral->update(['status' => 'Closed']);
-        }
+            // Update referral status only for certain outcomes
+            if ($validated['outcome'] === 'Finished' || $validated['outcome'] === 'Death') {
+                $referral->update(['status' => 'Closed']);
+            }
 
-        // If Transferred, create new referral
-        if ($validated['outcome'] === 'Transferred') {
-            Referral::create([
-                'referral_number'     => $referral->referral_number,
-                'patient_id'          => $referral->patient_id,
-                'hospital_id'         => $validated['hospital_id'],
-                'status'              => 'Transferred',
-                'reason_id'           => $referral->reason_id,
-                'parent_referral_id'  => $referral->referral_id, // link to parent
-                'confirmed_by'        => Auth::id(),
-                'created_by'          => Auth::id(),
+            // If Transferred, create new referral
+            if ($validated['outcome'] === 'Transferred') {
+                Referral::create([
+                    'referral_number'     => $referral->referral_number,
+                    'patient_id'          => $referral->patient_id,
+                    'hospital_id'         => $validated['hospital_id'],
+                    'status'              => 'Transferred',
+                    'reason_id'           => $referral->reason_id,
+                    'parent_referral_id'  => $referral->referral_id, // link to parent
+                    'confirmed_by'        => Auth::id(),
+                    'created_by'          => Auth::id(),
+                ]);
+            }
+
+            FollowUp::create([
+                'letter_id'       => $letter->letter_id,
+                'patient_id'      => $referral->patient_id,
+                'followup_date'   => $followupData['followup_date'],
+                'notes'           => $followupData['notes'] ?? null,
+                'followup_status' => $followupData['followup_status'],
             ]);
-        }
 
-        // Save follow-up (explicit approach)
-        $followUp = new FollowUp();
-        $followUp->letter_id       = $letter->letter_id;
-        $followUp->patient_id      = $referral->patient_id;
-        $followUp->followup_date   = $followupData['followup_date'];
-        $followUp->notes           = $followupData['notes'] ?? null;
-        $followUp->followup_status = $followupData['followup_status'];
-
-        $followUp->save();
+            return $letter;
+        });
 
         return response()->json([
             'message'    => 'Follow-up created successfully',
