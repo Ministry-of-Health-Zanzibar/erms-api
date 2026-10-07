@@ -241,7 +241,6 @@ class UsersCotroller extends Controller
 
                     // 2️⃣ Create the user
                     $user = User::create([
-                        'id' => $auto_id,
                         'first_name' => $request->first_name,
                         'middle_name' => $request->middle_name,
                         'last_name' => $request->last_name,
