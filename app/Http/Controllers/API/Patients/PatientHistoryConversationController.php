@@ -44,7 +44,9 @@ class PatientHistoryConversationController extends Controller
         // Fetch all root conversations where user is sender OR receiver
         $conversations = PatientHistoryConversation::with([
             'sender:id,first_name,last_name',
+            'receiver:id,first_name,last_name',
             'children.sender:id,first_name,last_name',
+            'children.receiver:id,first_name,last_name',
         ])
             ->where('patient_history_id', $patientHistoryId)
             ->whereNull('parent_id')
@@ -68,6 +70,10 @@ class PatientHistoryConversationController extends Controller
                 'conversation_id' => $convo->conversation_id,
                 'user_id' => $convo->sender->id,
                 'sender_full_name' => $convo->sender->first_name.' '.$convo->sender->last_name,
+                'receiver_id' => $convo->receiver_id,
+                'receiver_full_name' => $convo->receiver
+                    ? trim($convo->receiver->first_name.' '.$convo->receiver->last_name)
+                    : null,
                 'message' => $convo->message,
                 'date' => $convo->created_at->diffForHumans(),
 
@@ -83,6 +89,10 @@ class PatientHistoryConversationController extends Controller
                         'conversation_id' => $reply->conversation_id,
                         'user_id' => $reply->sender_id,
                         'sender_full_name' => $reply->sender->first_name.' '.$reply->sender->last_name,
+                        'receiver_id' => $reply->receiver_id,
+                        'receiver_full_name' => $reply->receiver
+                            ? trim($reply->receiver->first_name.' '.$reply->receiver->last_name)
+                            : null,
                         'message' => $reply->message,
                         'date' => $reply->created_at->diffForHumans(),
                     ];
@@ -111,8 +121,12 @@ class PatientHistoryConversationController extends Controller
             ->with([
                 'sender:id,first_name,last_name',
                 'children' => function ($query) {
-                    $query->with('sender:id,first_name,last_name')->oldest();
+                    $query->with([
+                        'sender:id,first_name,last_name',
+                        'receiver:id,first_name,last_name',
+                    ])->oldest();
                 },
+                'receiver:id,first_name,last_name',
             ])
             ->latest()
             ->get();
@@ -129,6 +143,10 @@ class PatientHistoryConversationController extends Controller
                 'conversation_id' => $convo->conversation_id,
                 'user_id' => $convo->sender->id,
                 'sender_full_name' => $convo->sender->first_name.' '.$convo->sender->last_name,
+                'receiver_id' => $convo->receiver_id,
+                'receiver_full_name' => $convo->receiver
+                    ? trim($convo->receiver->first_name.' '.$convo->receiver->last_name)
+                    : null,
                 'message' => $convo->message,
                 'date' => $convo->created_at->diffForHumans(),
 
@@ -144,6 +162,10 @@ class PatientHistoryConversationController extends Controller
                         'conversation_id' => $reply->conversation_id,
                         'user_id' => $reply->sender_id,
                         'sender_full_name' => $reply->sender->first_name.' '.$reply->sender->last_name,
+                        'receiver_id' => $reply->receiver_id,
+                        'receiver_full_name' => $reply->receiver
+                            ? trim($reply->receiver->first_name.' '.$reply->receiver->last_name)
+                            : null,
                         'message' => $reply->message,
                         'date' => $reply->created_at->diffForHumans(),
                     ];
