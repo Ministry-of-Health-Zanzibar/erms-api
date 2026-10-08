@@ -45,8 +45,10 @@ class PatientHistoryConversationController extends Controller
         $conversations = PatientHistoryConversation::with([
             'sender:id,first_name,last_name',
             'receiver:id,first_name,last_name',
+            'statuses',
             'children.sender:id,first_name,last_name',
             'children.receiver:id,first_name,last_name',
+            'children.statuses',
         ])
             ->where('patient_history_id', $patientHistoryId)
             ->whereNull('parent_id')
@@ -58,7 +60,11 @@ class PatientHistoryConversationController extends Controller
             ->get();
 
         if ($conversations->isEmpty()) {
-            return response()->json(['statusCode' => 404, 'message' => 'No conversations found.'], 404);
+            return response()->json([
+                'statusCode' => 200,
+                'data' => [],
+                'message' => 'No conversations found.',
+            ], 200);
         }
 
         // Pull patient profile metadata
@@ -76,6 +82,7 @@ class PatientHistoryConversationController extends Controller
                     : null,
                 'message' => $convo->message,
                 'date' => $convo->created_at->diffForHumans(),
+                ...$this->messageStatus($convo),
 
                 // --- METADATA INJECTION ---
                 'patient_name' => $historyContext && $historyContext->patient ? $historyContext->patient->name : 'Unknown Patient',
@@ -95,6 +102,7 @@ class PatientHistoryConversationController extends Controller
                             : null,
                         'message' => $reply->message,
                         'date' => $reply->created_at->diffForHumans(),
+                        ...$this->messageStatus($reply),
                     ];
                 }),
             ];
@@ -124,15 +132,21 @@ class PatientHistoryConversationController extends Controller
                     $query->with([
                         'sender:id,first_name,last_name',
                         'receiver:id,first_name,last_name',
+                        'statuses',
                     ])->oldest();
                 },
                 'receiver:id,first_name,last_name',
+                'statuses',
             ])
             ->latest()
             ->get();
 
         if ($conversations->isEmpty()) {
-            return response()->json(['statusCode' => 404, 'message' => 'No conversations found.'], 404);
+            return response()->json([
+                'statusCode' => 200,
+                'data' => [],
+                'message' => 'No conversations found.',
+            ], 200);
         }
 
         $historyContext = PatientHistory::with(['patient'])->find($patientHistoryId);
@@ -149,6 +163,7 @@ class PatientHistoryConversationController extends Controller
                     : null,
                 'message' => $convo->message,
                 'date' => $convo->created_at->diffForHumans(),
+                ...$this->messageStatus($convo),
 
                 // --- METADATA INJECTION ---
                 'patient_name' => $historyContext && $historyContext->patient ? $historyContext->patient->name : 'Unknown Patient',
@@ -168,6 +183,7 @@ class PatientHistoryConversationController extends Controller
                             : null,
                         'message' => $reply->message,
                         'date' => $reply->created_at->diffForHumans(),
+                        ...$this->messageStatus($reply),
                     ];
                 }),
             ];
@@ -455,5 +471,16 @@ class PatientHistoryConversationController extends Controller
             'statusCode' => 200,
             'message' => 'Conversations marked as read',
         ], 200);
+    }
+
+    private function messageStatus(PatientHistoryConversation $conversation): array
+    {
+        $status = $conversation->statuses
+            ->firstWhere('user_id', $conversation->receiver_id);
+
+        return [
+            'delivered' => $status !== null,
+            'read_by_recipient' => $status?->read_at !== null,
+        ];
     }
 }

@@ -520,19 +520,42 @@ class ReportController extends Controller
     //         ->join('hospitals', 'hospitals.hospital_id', '=', 'referrals.hospital_id')
     //         ->join('reasons', 'reasons.reason_id', '=', 'referrals.reason_id')
     //         ->leftJoin('insurances', 'insurances.patient_id', '=', 'patients.patient_id')
+    //         ->leftJoin('referral_letters', 'referral_letters.referral_id', '=', 'referrals.referral_id')
+
     //         ->select(
     //             'referrals.referral_id',
     //             'referrals.created_at',
     //             'referrals.status as referral_status',
+
     //             'patients.patient_id',
     //             'patients.name as patient_name',
+
     //             'hospitals.hospital_name',
     //             'hospitals.hospital_address',
-    //             'reasons.referral_reason_name',
-    //             'insurances.insurance_provider_name'
-    //         );
 
-    //     // Filters (Postgres uses ILIKE)
+    //             'reasons.referral_reason_name',
+
+    //             'insurances.insurance_provider_name',
+
+    //             // Referral letter dates
+    //             'referral_letters.start_date',
+    //             'referral_letters.end_date'
+    //         )
+
+    //         ->selectRaw("
+    //             (
+    //                 SELECT STRING_AGG(DISTINCT d.diagnosis_name, ', ')
+    //                 FROM patient_histories ph
+    //                 JOIN history_diagnosis hd
+    //                     ON hd.patient_histories_id = ph.patient_histories_id
+    //                 JOIN diagnoses d
+    //                     ON d.diagnosis_id = hd.diagnosis_id
+    //                 WHERE ph.patient_id = patients.patient_id
+    //                     AND hd.added_by = 'medical_board'
+    //             ) AS board_diagnoses
+    //         ");
+
+    //     // Filters
     //     if ($request->filled('patient_name')) {
     //         $query->where('patients.name', 'ILIKE', '%'.$request->patient_name.'%');
     //     }
@@ -549,117 +572,398 @@ class ReportController extends Controller
     //         $query->where('reasons.referral_reason_name', 'ILIKE', '%'.$request->referral_reason_name.'%');
     //     }
 
-    //     // Date range filter
+    //     // Filter by referral letter dates (DG referral period)
     //     if ($request->filled('start_date') && $request->filled('end_date')) {
-    //         $query->whereBetween('referrals.created_at', [$request->start_date, $request->end_date]);
+    //         $query->whereBetween('referral_letters.start_date', [
+    //             $request->start_date,
+    //             $request->end_date,
+    //         ]);
     //     }
 
     //     $results = $query->get();
+
+    //     foreach ($results as $result) {
+
+    //         $result->board_diagnoses = DB::table('patient_histories as ph')
+    //             ->join('history_diagnosis as hd', 'hd.patient_histories_id', '=', 'ph.patient_histories_id')
+    //             ->join('diagnoses as d', 'd.diagnosis_id', '=', 'hd.diagnosis_id')
+    //             ->where('ph.patient_id', $result->patient_id)
+    //             ->where('hd.added_by', 'medical_board')
+    //             ->select(
+    //                 'd.diagnosis_id',
+    //                 'd.diagnosis_code',
+    //                 'd.diagnosis_name'
+    //             )
+    //             ->distinct()
+    //             ->get();
+    //     }
 
     //     return response([
     //         'data' => $results,
     //         'statusCode' => 200,
     //     ], 200);
     // }
+
     public function searchReferralReport(Request $request)
-    {
-        // Permission check
-        $user = auth()->user();
-        if (! $user->can('View Report')) {
-            return response([
-                'message' => 'Forbidden',
-                'statusCode' => 403,
-            ], 403);
-        }
+{
+    // Permission check
+    $user = auth()->user();
 
-        $query = DB::table('referrals')
-            ->join('patients', 'patients.patient_id', '=', 'referrals.patient_id')
-            ->join('hospitals', 'hospitals.hospital_id', '=', 'referrals.hospital_id')
-            ->join('reasons', 'reasons.reason_id', '=', 'referrals.reason_id')
-            ->leftJoin('insurances', 'insurances.patient_id', '=', 'patients.patient_id')
-            ->leftJoin('referral_letters', 'referral_letters.referral_id', '=', 'referrals.referral_id')
+    if (! $user->can('View Report')) {
+        return response([
+            'message' => 'Forbidden',
+            'statusCode' => 403,
+        ], 403);
+    }
 
-            ->select(
-                'referrals.referral_id',
-                'referrals.created_at',
-                'referrals.status as referral_status',
+    $query = DB::table('referrals as r')
 
-                'patients.patient_id',
-                'patients.name as patient_name',
+        /*
+        |--------------------------------------------------------------------------
+        | PATIENT
+        |--------------------------------------------------------------------------
+        */
+        ->join(
+            'patients as p',
+            'p.patient_id',
+            '=',
+            'r.patient_id'
+        )
 
-                'hospitals.hospital_name',
-                'hospitals.hospital_address',
+        /*
+        |--------------------------------------------------------------------------
+        | FROM HOSPITAL
+        |--------------------------------------------------------------------------
+        |
+        | The FROM hospital is obtained from the user who created
+        | the referral:
+        |
+        | referrals.created_by
+        |        ↓
+        | hospital_user.user_id
+        |        ↓
+        | hospital_user.hospital_id
+        |        ↓
+        | hospitals.hospital_id
+        |
+        | Only hospitals with referral_type_id = 3 are FROM hospitals.
+        |
+        | parent_referral_id is NOT used.
+        |
+        */
+        ->leftJoin(
+            'hospital_user as from_hospital_user',
+            'from_hospital_user.user_id',
+            '=',
+            'r.created_by'
+        )
 
-                'reasons.referral_reason_name',
+        ->leftJoin(
+            'hospitals as from_hospital',
+            function ($join) {
+                $join->on(
+                    'from_hospital.hospital_id',
+                    '=',
+                    'from_hospital_user.hospital_id'
+                )
+                ->where(
+                    'from_hospital.referral_type_id',
+                    '=',
+                    3
+                );
+            }
+        )
 
-                'insurances.insurance_provider_name',
+        /*
+        |--------------------------------------------------------------------------
+        | TO HOSPITAL
+        |--------------------------------------------------------------------------
+        |
+        | The TO hospital comes from referrals.hospital_id.
+        |
+        | Only hospitals with referral_type_id 1 or 2 are TO hospitals.
+        |
+        */
+        ->leftJoin(
+            'hospitals as to_hospital',
+            function ($join) {
+                $join->on(
+                    'to_hospital.hospital_id',
+                    '=',
+                    'r.hospital_id'
+                )
+                ->whereIn(
+                    'to_hospital.referral_type_id',
+                    [1, 2]
+                );
+            }
+        )
 
-                // Referral letter dates
-                'referral_letters.start_date',
-                'referral_letters.end_date'
-            )
+        /*
+        |--------------------------------------------------------------------------
+        | REASON
+        |--------------------------------------------------------------------------
+        */
+        ->join(
+            'reasons',
+            'reasons.reason_id',
+            '=',
+            'r.reason_id'
+        )
 
-            ->selectRaw("
-                (
-                    SELECT STRING_AGG(DISTINCT d.diagnosis_name, ', ')
-                    FROM patient_histories ph
-                    JOIN history_diagnosis hd
-                        ON hd.patient_histories_id = ph.patient_histories_id
-                    JOIN diagnoses d
-                        ON d.diagnosis_id = hd.diagnosis_id
-                    WHERE ph.patient_id = patients.patient_id
-                        AND hd.added_by = 'medical_board'
-                ) AS board_diagnoses
-            ");
+        /*
+        |--------------------------------------------------------------------------
+        | INSURANCE
+        |--------------------------------------------------------------------------
+        */
+        ->leftJoin(
+            'insurances',
+            'insurances.patient_id',
+            '=',
+            'p.patient_id'
+        )
 
-        // Filters
-        if ($request->filled('patient_name')) {
-            $query->where('patients.name', 'ILIKE', '%'.$request->patient_name.'%');
-        }
+        /*
+        |--------------------------------------------------------------------------
+        | REFERRAL LETTER
+        |--------------------------------------------------------------------------
+        */
+        ->leftJoin(
+            'referral_letters as rl',
+            'rl.referral_id',
+            '=',
+            'r.referral_id'
+        )
 
-        if ($request->filled('hospital_name')) {
-            $query->where('hospitals.hospital_name', 'ILIKE', '%'.$request->hospital_name.'%');
-        }
+        /*
+        |--------------------------------------------------------------------------
+        | SELECT
+        |--------------------------------------------------------------------------
+        */
+        ->select(
+            'r.referral_id',
+            'r.parent_referral_id',
+            'r.referral_number',
+            'r.created_at',
+            'r.status as referral_status',
 
-        if ($request->filled('hospital_address')) {
-            $query->where('hospitals.hospital_address', 'ILIKE', '%'.$request->hospital_address.'%');
-        }
+            'p.patient_id',
+            'p.name as patient_name',
 
-        if ($request->filled('referral_reason_name')) {
-            $query->where('reasons.referral_reason_name', 'ILIKE', '%'.$request->referral_reason_name.'%');
-        }
+            /*
+            |--------------------------------------------------------------------------
+            | FROM HOSPITAL
+            |--------------------------------------------------------------------------
+            |
+            | These are aliases generated by the query.
+            | They are NOT database columns.
+            |
+            */
+            'from_hospital.hospital_id as from_hospital_id',
+            'from_hospital.hospital_name as from_hospital_name',
+            'from_hospital.hospital_address as from_hospital_address',
 
-        // Filter by referral letter dates (DG referral period)
-        if ($request->filled('start_date') && $request->filled('end_date')) {
-            $query->whereBetween('referral_letters.start_date', [
+            /*
+            |--------------------------------------------------------------------------
+            | TO HOSPITAL
+            |--------------------------------------------------------------------------
+            */
+            'to_hospital.hospital_id as to_hospital_id',
+            'to_hospital.hospital_name as to_hospital_name',
+            'to_hospital.hospital_address as to_hospital_address',
+
+            'reasons.referral_reason_name',
+
+            'insurances.insurance_provider_name',
+
+            'rl.start_date',
+            'rl.end_date'
+        )
+
+        /*
+        |--------------------------------------------------------------------------
+        | BOARD DIAGNOSES
+        |--------------------------------------------------------------------------
+        */
+        ->selectRaw("
+            (
+                SELECT STRING_AGG(
+                    DISTINCT d.diagnosis_name,
+                    ', '
+                )
+                FROM patient_histories ph
+                JOIN history_diagnosis hd
+                    ON hd.patient_histories_id = ph.patient_histories_id
+                JOIN diagnoses d
+                    ON d.diagnosis_id = hd.diagnosis_id
+                WHERE ph.patient_id = p.patient_id
+                    AND hd.added_by = 'medical_board'
+            ) AS board_diagnoses
+        ");
+
+    /*
+    |--------------------------------------------------------------------------
+    | ONLY TO-HOSPITAL REFERRALS
+    |--------------------------------------------------------------------------
+    |
+    | The main referral must point to a hospital whose type is 1 or 2.
+    |
+    */
+    $query->whereIn(
+        'to_hospital.referral_type_id',
+        [1, 2]
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | FILTERS
+    |--------------------------------------------------------------------------
+    */
+
+    if ($request->filled('patient_name')) {
+        $query->where(
+            'p.name',
+            'ILIKE',
+            '%' . $request->patient_name . '%'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | FROM HOSPITAL NAME
+    |--------------------------------------------------------------------------
+    */
+    if ($request->filled('from_hospital_name')) {
+        $query->where(
+            'from_hospital.hospital_name',
+            'ILIKE',
+            '%' . $request->from_hospital_name . '%'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | FROM HOSPITAL ADDRESS
+    |--------------------------------------------------------------------------
+    */
+    if ($request->filled('from_hospital_address')) {
+        $query->where(
+            'from_hospital.hospital_address',
+            'ILIKE',
+            '%' . $request->from_hospital_address . '%'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | TO HOSPITAL NAME
+    |--------------------------------------------------------------------------
+    */
+    if ($request->filled('to_hospital_name')) {
+        $query->where(
+            'to_hospital.hospital_name',
+            'ILIKE',
+            '%' . $request->to_hospital_name . '%'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | TO HOSPITAL ADDRESS
+    |--------------------------------------------------------------------------
+    */
+    if ($request->filled('to_hospital_address')) {
+        $query->where(
+            'to_hospital.hospital_address',
+            'ILIKE',
+            '%' . $request->to_hospital_address . '%'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | REFERRAL REASON
+    |--------------------------------------------------------------------------
+    */
+    if ($request->filled('referral_reason_name')) {
+        $query->where(
+            'reasons.referral_reason_name',
+            'ILIKE',
+            '%' . $request->referral_reason_name . '%'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | DATE RANGE
+    |--------------------------------------------------------------------------
+    */
+    if (
+        $request->filled('start_date') &&
+        $request->filled('end_date')
+    ) {
+        $query->whereBetween(
+            'rl.start_date',
+            [
                 $request->start_date,
                 $request->end_date,
-            ]);
-        }
-
-        $results = $query->get();
-
-        foreach ($results as $result) {
-
-            $result->board_diagnoses = DB::table('patient_histories as ph')
-                ->join('history_diagnosis as hd', 'hd.patient_histories_id', '=', 'ph.patient_histories_id')
-                ->join('diagnoses as d', 'd.diagnosis_id', '=', 'hd.diagnosis_id')
-                ->where('ph.patient_id', $result->patient_id)
-                ->where('hd.added_by', 'medical_board')
-                ->select(
-                    'd.diagnosis_id',
-                    'd.diagnosis_code',
-                    'd.diagnosis_name'
-                )
-                ->distinct()
-                ->get();
-        }
-
-        return response([
-            'data' => $results,
-            'statusCode' => 200,
-        ], 200);
+            ]
+        );
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | GET RESULTS
+    |--------------------------------------------------------------------------
+    */
+    $results = $query
+        ->orderByDesc('r.created_at')
+        ->get();
+
+    /*
+    |--------------------------------------------------------------------------
+    | BOARD DIAGNOSES DETAILS
+    |--------------------------------------------------------------------------
+    */
+    foreach ($results as $result) {
+
+        $result->board_diagnoses = DB::table(
+            'patient_histories as ph'
+        )
+            ->join(
+                'history_diagnosis as hd',
+                'hd.patient_histories_id',
+                '=',
+                'ph.patient_histories_id'
+            )
+            ->join(
+                'diagnoses as d',
+                'd.diagnosis_id',
+                '=',
+                'hd.diagnosis_id'
+            )
+            ->where(
+                'ph.patient_id',
+                $result->patient_id
+            )
+            ->where(
+                'hd.added_by',
+                'medical_board'
+            )
+            ->select(
+                'd.diagnosis_id',
+                'd.diagnosis_code',
+                'd.diagnosis_name'
+            )
+            ->distinct()
+            ->get();
+    }
+
+    return response([
+        'data' => $results,
+        'statusCode' => 200,
+    ], 200);
+}
 
     public function rangeReport(Request $request)
     {

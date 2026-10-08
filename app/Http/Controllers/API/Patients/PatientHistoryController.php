@@ -13,6 +13,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
 use App\Services\PatientHistoryWorkflowService;
+use App\Services\ReasonResolver;
 use App\Support\Pagination;
 use App\Support\SuperAdminAccess;
 
@@ -290,7 +291,8 @@ class PatientHistoryController extends Controller
 
         $validator = Validator::make($request->all(), [
             'patient_id' => 'required|exists:patients,patient_id',
-            'reason_id' => 'required|exists:reasons,reason_id',
+            'reason_id' => 'nullable|numeric|exists:reasons,reason_id',
+            'custom_reason' => 'nullable|string|max:255',
             'case_type' => 'nullable|in:Routine,Emergency',
             'file_number' => 'nullable|string',
             'referring_date' => 'nullable|string',
@@ -302,6 +304,10 @@ class PatientHistoryController extends Controller
             'diagnosis_ids.*' => 'exists:diagnoses,diagnosis_id',
             'history_file' => 'nullable|file|mimes:pdf,jpg,jpeg,png|max:2048',
         ]);
+
+        if (! $request->filled('reason_id') && trim((string) $request->input('custom_reason')) === '') {
+            $validator->errors()->add('reason_id', 'Select a referral reason or enter a custom reason.');
+        }
 
         if ($validator->fails()) {
             return response()->json([
@@ -345,7 +351,6 @@ class PatientHistoryController extends Controller
                 'Pending',
                 'Confirmed',
                 'Death',
-                'Cancelled',
                 'Transferred',
                 'Requested',
             ];
@@ -358,23 +363,28 @@ class PatientHistoryController extends Controller
                 ], 409);
             }
 
-            // 2️⃣ If NO referral found → check last patient history status
-            if (! $latestReferral) {
-                $lastHistory = \App\Models\PatientHistory::where('patient_id', $data['patient_id'])
-                    ->latest('created_at')
-                    ->first();
+            // 2. Always check the latest patient history
+            $lastHistory = \App\Models\PatientHistory::where('patient_id', $data['patient_id'])
+                ->latest('created_at')
+                ->first();
 
-                $blockedHistoryStatuses = ['confirmed', 'rejected'];
+            $blockedHistoryStatuses = [
+                'confirmed',
+                'rejected',
+            ];
 
-                if ($lastHistory && in_array(strtolower($lastHistory->status), $blockedHistoryStatuses)) {
-                    return response()->json([
-                        'status' => false,
-                        'message' => 'Cannot create patient history. Last patient history status is "'
-                                    .$lastHistory->status.'".',
-                        'statusCode' => 409,
-                    ], 409);
-                }
+            if ($lastHistory && in_array(strtolower($lastHistory->status), $blockedHistoryStatuses)) {
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Cannot create patient history. Last patient history status is "'.$lastHistory->status.'".',
+                    'statusCode' => 409,
+                ], 409);
             }
+
+            $data['reason_id'] = app(ReasonResolver::class)->resolve(
+                $request->input('reason_id'),
+                $request->input('custom_reason')
+            );
 
             // Normalize referring_date
             if (empty($data['referring_date']) || strtolower($data['referring_date']) === 'default') {
@@ -630,7 +640,8 @@ class PatientHistoryController extends Controller
 
         $validator = Validator::make($request->all(), [
             'patient_id' => 'nullable|exists:patients,patient_id', // optional if changing patient
-            'reason_id' => 'nullable|exists:reasons,reason_id',
+            'reason_id' => 'nullable|numeric|exists:reasons,reason_id',
+            'custom_reason' => 'nullable|string|max:255',
             // 'referring_doctor' => 'nullable|string',
             'file_number' => 'nullable|string',
             'referring_date' => 'nullable|string',
@@ -664,6 +675,15 @@ class PatientHistoryController extends Controller
                 'investigations',
                 'management_done',
             ]);
+
+            if ($request->filled('reason_id') || trim((string) $request->input('custom_reason')) !== '') {
+                $data['reason_id'] = app(ReasonResolver::class)->resolve(
+                    $request->input('reason_id'),
+                    $request->input('custom_reason')
+                );
+            } else {
+                unset($data['reason_id']);
+            }
 
             // Normalize referring_date
             if (empty($data['referring_date']) || strtolower($data['referring_date']) === 'default') {
@@ -825,7 +845,8 @@ class PatientHistoryController extends Controller
 
         $validator = Validator::make($request->all(), [
             'board_comments' => 'required|string',
-            'board_reason_id' => 'required|exists:reasons,reason_id',
+            'board_reason_id' => 'nullable|numeric|exists:reasons,reason_id',
+            'custom_reason' => 'nullable|string|max:255',
             'board_diagnosis_ids' => 'required|array',
             'board_diagnosis_ids.*' => 'exists:diagnoses,diagnosis_id',
             'patient_file' => 'nullable|file|mimes:pdf,jpg,png,doc,docx|max:5000',
@@ -833,6 +854,10 @@ class PatientHistoryController extends Controller
             // NEW: Flag to determine if a referral record is actually needed
             'create_referral_record' => 'required|boolean',
         ]);
+
+        if (! $request->filled('board_reason_id') && trim((string) $request->input('custom_reason')) === '') {
+            $validator->errors()->add('board_reason_id', 'Select a board reason or enter a custom reason.');
+        }
 
         if ($validator->fails()) {
             return response()->json(['status' => false, 'errors' => $validator->errors(), 'statusCode' => 422], 422);
@@ -846,6 +871,10 @@ class PatientHistoryController extends Controller
                 ->lockForUpdate()
                 ->findOrFail($id);
             $workflow = app(PatientHistoryWorkflowService::class);
+            $boardReasonId = app(ReasonResolver::class)->resolve(
+                $request->input('board_reason_id'),
+                $request->input('custom_reason')
+            );
             $fromStatus = $history->status;
             $beforeSnapshot = $workflow->snapshot($history, []);
             $referral = null;
@@ -853,7 +882,7 @@ class PatientHistoryController extends Controller
             // 1. Always Update Board findings (Uchunguzi/Maamuzi)
             $history->update([
                 'board_comments' => $request->board_comments,
-                'board_reason_id' => $request->board_reason_id,
+                'board_reason_id' => $boardReasonId,
             ]);
 
             // 2. Sync diagnoses to the history (added_by medical_board)
@@ -873,7 +902,7 @@ class PatientHistoryController extends Controller
 
                 $referral = Referral::create([
                     'patient_id' => $history->patient_id,
-                    'reason_id' => $request->board_reason_id,
+                    'reason_id' => $boardReasonId,
                     'status' => 'Requested',
                     'referral_number' => $referralNumber,
                     'created_by' => $user->id,
@@ -945,13 +974,18 @@ class PatientHistoryController extends Controller
 
         $validator = Validator::make($request->all(), [
             'board_comments' => 'required|string',
-            'board_reason_id' => 'required|exists:reasons,reason_id',
+            'board_reason_id' => 'nullable|numeric|exists:reasons,reason_id',
+            'custom_reason' => 'nullable|string|max:255',
             'board_diagnosis_ids' => 'required|array',
             'board_diagnosis_ids.*' => 'exists:diagnoses,diagnosis_id',
             'patient_file' => 'nullable|file|mimes:pdf,jpg,png,doc,docx|max:5000',
             'description' => 'nullable|string',
             'create_referral_record' => 'required|boolean',
         ]);
+
+        if (! $request->filled('board_reason_id') && trim((string) $request->input('custom_reason')) === '') {
+            $validator->errors()->add('board_reason_id', 'Select a board reason or enter a custom reason.');
+        }
 
         if ($validator->fails()) {
             return response()->json(['status' => false, 'errors' => $validator->errors(), 'statusCode' => 422], 422);
@@ -963,6 +997,10 @@ class PatientHistoryController extends Controller
                 ->lockForUpdate()
                 ->findOrFail($id);
             $workflow = app(PatientHistoryWorkflowService::class);
+            $boardReasonId = app(ReasonResolver::class)->resolve(
+                $request->input('board_reason_id'),
+                $request->input('custom_reason')
+            );
             $fromStatus = $history->status;
 
             $referral = Referral::query()
@@ -979,7 +1017,7 @@ class PatientHistoryController extends Controller
             // 1. Update Board fields in History
             $history->update([
                 'board_comments' => $request->board_comments,
-                'board_reason_id' => $request->board_reason_id,
+                'board_reason_id' => $boardReasonId,
             ]);
 
             // 2. Sync Board Diagnoses (Sync ensures removals are processed)
@@ -1010,14 +1048,14 @@ class PatientHistoryController extends Controller
 
                     $referral = Referral::create([
                         'patient_id' => $history->patient_id,
-                        'reason_id' => $request->board_reason_id,
+                        'reason_id' => $boardReasonId,
                         'status' => $newReferralStatus,
                         'referral_number' => $referralNumber,
                         'created_by' => $user->id,
                     ]);
                 } else {
                     $referralUpdates = [
-                        'reason_id' => $request->board_reason_id,
+                        'reason_id' => $boardReasonId,
                     ];
 
                     // Repair a referral created by the previous edit flow if

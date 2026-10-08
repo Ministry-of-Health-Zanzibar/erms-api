@@ -9,6 +9,7 @@ use App\Models\Patient;
 use App\Models\PatientFile;
 use App\Services\MatibabuService;
 use App\Services\PatientHistoryWorkflowService;
+use App\Services\ReasonResolver;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -541,7 +542,8 @@ class PatientController extends Controller
 
             'file_number' => ['nullable', 'string'],
             'referring_date' => ['nullable', 'string'],
-            'reason_id' => ['required', 'numeric', 'exists:reasons,reason_id'],
+            'reason_id' => ['nullable', 'numeric', 'exists:reasons,reason_id'],
+            'custom_reason' => ['nullable', 'string', 'max:255'],
             'case_type' => ['required', 'in:Emergency,Routine'],
             'history_file' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:2048'],
             'diagnosis_ids' => ['nullable', 'array'],
@@ -552,6 +554,10 @@ class PatientController extends Controller
             'card_number' => ['nullable', 'string'],
             'valid_until' => ['nullable', 'string'],
         ]);
+
+        if (! $request->filled('reason_id') && trim((string) $request->input('custom_reason')) === '') {
+            $validator->errors()->add('reason_id', 'Select a referral reason or enter a custom reason.');
+        }
 
         if ($validator->fails()) {
             return response()->json(['status' => 'error', 'errors' => $validator->errors(), 'statusCode' => 422], 422);
@@ -566,6 +572,11 @@ class PatientController extends Controller
 
         DB::beginTransaction();
         try {
+            $reasonId = app(ReasonResolver::class)->resolve(
+                $request->input('reason_id'),
+                $request->input('custom_reason')
+            );
+
             // 5. UPSERT PATIENT
             if ($isDataEntry) {
                 // 5a. KWA DATA ENTRY: Tengeneza mgonjwa mpya kila wakati (Hata kama kadi inafanana au ni null)
@@ -607,7 +618,7 @@ class PatientController extends Controller
                 'referring_doctor' => $doctorName,
                 'file_number' => $request->file_number,
                 'referring_date' => $request->referring_date,
-                'reason_id' => $request->reason_id,
+                'reason_id' => $reasonId,
                 'case_type' => $request->case_type,
                 'history_of_presenting_illness' => $request->history_of_presenting_illness,
                 'physical_findings' => $request->physical_findings,
@@ -710,7 +721,8 @@ class PatientController extends Controller
 
             'file_number' => ['nullable', 'string'],
             'referring_date' => ['nullable', 'string'],
-            'reason_id' => ['required', 'numeric', 'exists:reasons,reason_id'],
+            'reason_id' => ['nullable', 'numeric', 'exists:reasons,reason_id'],
+            'custom_reason' => ['nullable', 'string', 'max:255'],
             'case_type' => ['required', 'in:Emergency,Routine'],
             'history_of_presenting_illness' => ['nullable', 'string'],
             'physical_findings' => ['nullable', 'string'],
@@ -726,12 +738,21 @@ class PatientController extends Controller
             'valid_until' => ['nullable', 'string'],
         ]);
 
+        if (! $request->filled('reason_id') && trim((string) $request->input('custom_reason')) === '') {
+            $validator->errors()->add('reason_id', 'Select a referral reason or enter a custom reason.');
+        }
+
         if ($validator->fails()) {
             return response()->json(['status' => 'error', 'errors' => $validator->errors(), 'statusCode' => 422], 422);
         }
 
         DB::beginTransaction();
         try {
+            $reasonId = app(ReasonResolver::class)->resolve(
+                $request->input('reason_id'),
+                $request->input('custom_reason')
+            );
+
             // 4. Create the patient
             $patient = \App\Models\Patient::create([
                 'name' => $request->name,
@@ -755,7 +776,7 @@ class PatientController extends Controller
                 'referring_doctor' => $doctorName,
                 'file_number' => $request->file_number,
                 'referring_date' => $request->referring_date,
-                'reason_id' => $request->reason_id,
+                'reason_id' => $reasonId,
                 'case_type' => $request->case_type,
                 'history_of_presenting_illness' => $request->history_of_presenting_illness,
                 'physical_findings' => $request->physical_findings,
@@ -829,7 +850,7 @@ class PatientController extends Controller
 
             $referral = \App\Models\Referral::create([
                 'patient_id' => $patient->patient_id,
-                'reason_id' => $request->reason_id,
+                'reason_id' => $reasonId,
                 'status' => 'Requested',
                 'referral_number' => $referralNumber,
                 'created_by' => $user->id,
@@ -898,7 +919,8 @@ class PatientController extends Controller
 
             'file_number' => ['nullable', 'string'],
             'referring_date' => ['nullable', 'string'],
-            'reason_id' => ['required', 'numeric', 'exists:reasons,reason_id'],
+            'reason_id' => ['nullable', 'numeric', 'exists:reasons,reason_id'],
+            'custom_reason' => ['nullable', 'string', 'max:255'],
             'case_type' => ['required', 'in:Emergency,Routine'],
             'history_file' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:2048'],
             'diagnosis_ids' => ['nullable', 'array'],
@@ -914,12 +936,21 @@ class PatientController extends Controller
             'valid_until' => ['nullable', 'string'],
         ]);
 
+        if (! $request->filled('reason_id') && trim((string) $request->input('custom_reason')) === '') {
+            $validator->errors()->add('reason_id', 'Select a referral reason or enter a custom reason.');
+        }
+
         if ($validator->fails()) {
             return response()->json(['status' => 'error', 'errors' => $validator->errors(), 'statusCode' => 422], 422);
         }
 
         DB::beginTransaction();
         try {
+            $reasonId = app(ReasonResolver::class)->resolve(
+                $request->input('reason_id'),
+                $request->input('custom_reason')
+            );
+
             // 1. Tafuta mgonjwa
             $patient = \App\Models\Patient::findOrFail($patient_id);
 
@@ -949,7 +980,7 @@ class PatientController extends Controller
             $patientHistory->update([
                 'file_number' => $request->file_number,
                 'referring_date' => $request->referring_date,
-                'reason_id' => $request->reason_id,
+                'reason_id' => $reasonId,
                 'case_type' => $request->case_type,
                 'history_of_presenting_illness' => $request->history_of_presenting_illness,
                 'physical_findings' => $request->physical_findings,
