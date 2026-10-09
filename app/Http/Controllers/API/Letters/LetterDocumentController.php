@@ -7,7 +7,9 @@ use App\Models\BoardedOutLetter;
 use App\Models\HospitalLetter;
 use App\Models\LetterPrintEvent;
 use App\Models\ReferralLetter;
+use App\Models\Referral;
 use App\Services\Letters\LetterDocumentService;
+use App\Services\TransferReferralService;
 use Illuminate\Http\Request;
 
 class LetterDocumentController extends Controller
@@ -26,6 +28,9 @@ class LetterDocumentController extends Controller
         $letter = $this->documents->findReferralLetter($referralId);
 
         if (!$letter) {
+            if (Referral::whereKey($referralId)->whereNotNull('parent_referral_id')->exists()) {
+                return $this->transferLetterMissing();
+            }
             return response()->json(['message' => 'Referral letter not found', 'statusCode' => 404], 404);
         }
 
@@ -48,6 +53,9 @@ class LetterDocumentController extends Controller
         $letter = $this->documents->findReferralLetter($referralId);
 
         if (!$letter) {
+            if (Referral::whereKey($referralId)->whereNotNull('parent_referral_id')->exists()) {
+                return $this->transferLetterMissing();
+            }
             return response()->json(['message' => 'Referral letter not found', 'statusCode' => 404], 404);
         }
 
@@ -73,6 +81,13 @@ class LetterDocumentController extends Controller
             return response()->json(['message' => 'Follow-up letter not found', 'statusCode' => 404], 404);
         }
 
+        if ($letter->outcome === 'Transferred') {
+            if (! $this->canViewReferralLetter()) return $this->forbidden();
+            $transfer = app(TransferReferralService::class)->transferredReferral($letter);
+            if (! $transfer) return $this->transferNeedsReview();
+            return $this->referralPdf($request, $transfer->getKey());
+        }
+
         $language = $this->documents->defaultFollowUpLanguage($letter);
 
         return $this->pdfResponse(
@@ -91,6 +106,13 @@ class LetterDocumentController extends Controller
 
         if (!$letter) {
             return response()->json(['message' => 'Follow-up letter not found', 'statusCode' => 404], 404);
+        }
+
+        if ($letter->outcome === 'Transferred') {
+            if (! $this->canViewReferralLetter()) return $this->forbidden();
+            $transfer = app(TransferReferralService::class)->transferredReferral($letter);
+            if (! $transfer) return $this->transferNeedsReview();
+            return $this->markReferralPrinted($request, $transfer->getKey());
         }
 
         $language = $this->documents->defaultFollowUpLanguage($letter);
@@ -166,9 +188,9 @@ class LetterDocumentController extends Controller
         ]);
     }
 
-    private function pdfResponse($pdf, string $filename)
+    private function pdfResponse(string $pdf, string $filename)
     {
-        return response($pdf->output(), 200, [
+        return response($pdf, 200, [
             'Content-Type' => 'application/pdf',
             'Content-Disposition' => 'inline; filename="' . $filename . '"',
             'Cache-Control' => 'private, no-store, max-age=0',
@@ -214,5 +236,21 @@ class LetterDocumentController extends Controller
     private function forbidden()
     {
         return response()->json(['message' => 'Forbidden', 'statusCode' => 403], 403);
+    }
+
+    private function transferNeedsReview()
+    {
+        return response()->json([
+            'message' => 'This transfer needs a verified destination referral link before its letter can be printed. Please ask an administrator to review the transfer record.',
+            'statusCode' => 422,
+        ], 422);
+    }
+
+    private function transferLetterMissing()
+    {
+        return response()->json([
+            'message' => 'This existing transfer has no prepared referral letter. Please ask an administrator to run the verified transfer-letter repair and review any unresolved case links.',
+            'statusCode' => 422,
+        ], 422);
     }
 }

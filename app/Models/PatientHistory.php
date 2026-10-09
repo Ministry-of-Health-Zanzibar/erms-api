@@ -82,6 +82,12 @@ class PatientHistory extends Model
             'current_holder' => 'Closed',
             'description' => 'Medical history rejected',
         ],
+        'boarded_out' => [
+            'stage' => 6,
+            'label' => 'Boarded Out',
+            'current_holder' => 'Completed',
+            'description' => 'Patient completed the process with a boarded-out decision',
+        ],
     ];
 
     public function getStatusTrackingAttribute()
@@ -147,14 +153,7 @@ class PatientHistory extends Model
 
     public function referrals()
     {
-        return $this->hasManyThrough(
-            Referral::class,
-            Patient::class,
-            'patient_id', // Foreign key on PatientHistory (belongs to patient)
-            'patient_id', // Foreign key on Referral
-            'patient_id', // Local key on PatientHistory
-            'patient_id'  // Local key on Patient
-        );
+        return $this->hasMany(Referral::class, 'patient_histories_id', 'patient_histories_id');
     }
 
     /**

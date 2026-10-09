@@ -17,6 +17,7 @@ final class ReportService
         private readonly ReportTitleBuilder $titleBuilder,
         private readonly ReportDataScope $scope,
         private readonly DynamicReferralReport $dynamicReferralReport,
+        private readonly CaseReport $caseReport,
     ) {
     }
 
@@ -37,9 +38,11 @@ final class ReportService
         $definition = $this->definitions->get($filters['report_type']);
         $title = $this->titleBuilder->title($filters['report_type'], $filters, $labels);
 
-        $result = $filters['report_type'] === ReportDefinitionRegistry::TOP_DIAGNOSES
-            ? $this->topDiagnoses($filters, $user, $paginate)
-            : $this->dynamicReferralReport->generate($filters, $user, $paginate);
+        $result = match ($filters['report_type']) {
+            ReportDefinitionRegistry::TOP_DIAGNOSES => $this->topDiagnoses($filters, $user, $paginate),
+            ReportDefinitionRegistry::REFERRALS_BY_HOSPITAL => $this->dynamicReferralReport->generate($filters, $user, $paginate),
+            default => $this->caseReport->generate($filters, $user, $paginate),
+        };
 
         $result['key'] = $filters['report_type'];
         $result['name'] = $definition['name'];
@@ -52,7 +55,9 @@ final class ReportService
         $result['generated_at_label'] = $generatedAt->format('d F Y H:i');
         $result['generated_by'] = $this->userName($user);
         $result['export_formats'] = $definition['exports'];
-        $result['confidential'] = ($filters['detail_level'] ?? 'breakdown') === 'details';
+        $result['confidential'] = in_array($filters['report_type'], [
+            ReportDefinitionRegistry::CASE_WORKFLOW, ReportDefinitionRegistry::BOARDED_OUT_CASES, ReportDefinitionRegistry::PATIENT_SUMMARY,
+        ], true) || ($filters['detail_level'] ?? 'breakdown') === 'details';
         $result['filename_base'] = pathinfo(
             $this->titleBuilder->filename($filters['report_type'], $filters, 'xlsx', $labels),
             PATHINFO_FILENAME,
@@ -123,8 +128,11 @@ final class ReportService
             'referral_statuses' => collect(['Pending', 'Confirmed', 'Death', 'Cancelled', 'Transferred', 'Expired', 'Closed', 'Requested', 'BoardedOut'])
                 ->map(static fn (string $status): array => ['value' => $status, 'label' => $status])
                 ->all(),
-            'patient_history_statuses' => collect(['pending', 'reviewed', 'assigned', 'requested', 'approved', 'confirmed', 'rejected'])
-                ->map(static fn (string $status): array => ['value' => $status, 'label' => ucfirst($status)])
+            'patient_history_statuses' => collect(['pending', 'reviewed', 'assigned', 'requested', 'approved', 'confirmed', 'boarded_out', 'rejected', 'under_review'])
+                ->map(static fn (string $status): array => [
+                    'value' => $status,
+                    'label' => $status === 'boarded_out' ? 'Boarded Out' : ucfirst(str_replace('_', ' ', $status)),
+                ])
                 ->all(),
             'age_groups' => collect($this->normalizer->ageGroups())
                 ->map(static fn (string $group): array => ['value' => $group, 'label' => $group.' years'])
@@ -582,7 +590,9 @@ final class ReportService
         $this->scope->applyPatientScope($query, $user, 'p');
         $this->applyPatientFilters($query, $filters, 'p');
 
-        if ($filters['patient_history_status'] !== null) {
+        if ($filters['patient_history_status'] === 'under_review') {
+            $query->whereIn('ph.status', CaseReport::OPEN_STATUSES);
+        } elseif ($filters['patient_history_status'] !== null) {
             $query->where('ph.status', $filters['patient_history_status']);
         }
 
@@ -899,6 +909,16 @@ final class ReportService
         $display = [
             'Reporting period' => $this->titleBuilder->periodLabel($filters),
         ];
+
+        if (in_array($filters['report_type'], ['case_workflow', 'boarded_out_cases', 'patient_summary'], true)) {
+            $display['Date basis'] = 'Case submission date';
+            $display['Submitting hospital'] = empty($labels['sourceHospitalNames']) ? 'All authorized hospitals' : implode(', ', $labels['sourceHospitalNames']);
+            $display['Case status'] = $filters['patient_history_status']
+                ? ucwords(str_replace('_', ' ', $filters['patient_history_status'])) : 'All';
+            $display['Archives'] = $filters['include_archived'] ? 'Included' : 'Excluded';
+            if ($filters['patient_search']) $display['Patient search'] = $filters['patient_search'];
+            return $display;
+        }
 
         if ($filters['report_type'] === ReportDefinitionRegistry::TOP_DIAGNOSES) {
             $display['Top results'] = 'Top '.$filters['top'];

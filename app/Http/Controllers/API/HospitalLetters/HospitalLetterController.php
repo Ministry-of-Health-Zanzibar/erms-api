@@ -6,11 +6,14 @@ use App\Http\Controllers\Controller;
 use App\Models\HospitalLetter;
 use App\Models\Referral;
 use App\Models\FollowUp;
+use App\Services\TransferReferralService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Str;
 use App\Support\Pagination;
 
 class HospitalLetterController extends Controller
@@ -137,7 +140,7 @@ class HospitalLetterController extends Controller
      *     @OA\Response(response=422, description="Validation error")
      * )
      */
-    public function store(Request $request)
+    public function store(Request $request, TransferReferralService $transfers)
     {
         $user = auth()->user();
 
@@ -157,6 +160,7 @@ class HospitalLetterController extends Controller
             'next_appointment_date' => 'nullable|date',
             'letter_file'           => 'nullable|file|mimes:pdf,doc,docx|max:2048',
             'outcome'               => 'required|in:Follow-up,Finished,Transferred,Death',
+            'submission_key'        => 'nullable|uuid',
         ];
 
         $validator = Validator::make($request->all(), $rules);
@@ -199,18 +203,24 @@ class HospitalLetterController extends Controller
             ], 404);
         }
 
+        if ($existing = $this->existingSubmission($validated)) {
+            return response()->json(['message' => 'Follow-up already saved successfully', 'data' => $existing, 'statusCode' => 200]);
+        }
+
         // Handle file upload
         if (!empty($validated['letter_file'])) {
             $file = $request->file('letter_file');
             $extension = $file->getClientOriginalExtension();
-            $newFileName = 'hospital_letter_' . date('h-i-s_a_d-m-Y') . '.' . $extension;
+            $newFileName = 'hospital_letter_' . Str::uuid() . '.' . $extension;
             $file->move(public_path('uploads/hospitalLetters/'), $newFileName);
             $validated['letter_file'] = 'uploads/hospitalLetters/' . $newFileName;
         }
 
         $validated['created_by'] = Auth::id();
 
-        $letter = DB::transaction(function () use ($validated, $referral): HospitalLetter {
+        $letter = DB::transaction(function () use ($validated, $referral, $transfers): HospitalLetter {
+            $referral = Referral::whereKey($referral->getKey())->lockForUpdate()->firstOrFail();
+            if ($existing = $this->existingSubmission($validated)) return $existing;
             // Create the hospital letter, referral changes, and follow-up as
             // one unit so a follow-up failure cannot leave a partial case.
             $letter = HospitalLetter::create($validated);
@@ -268,16 +278,7 @@ class HospitalLetterController extends Controller
 
             // If Transferred, create new referral
             if ($validated['outcome'] === 'Transferred') {
-                Referral::create([
-                    'referral_number'     => $referral->referral_number,
-                    'patient_id'          => $referral->patient_id,
-                    'hospital_id'         => $validated['hospital_id'],
-                    'status'              => 'Transferred',
-                    'reason_id'           => $referral->reason_id,
-                    'parent_referral_id'  => $referral->referral_id, // link to parent
-                    'confirmed_by'        => Auth::id(),
-                    'created_by'          => Auth::id(),
-                ]);
+                $transfers->create($letter, $referral, (int) $validated['hospital_id'], (int) Auth::id());
             }
 
             FollowUp::create([
@@ -296,6 +297,23 @@ class HospitalLetterController extends Controller
             'data'       => $letter,
             'statusCode' => 200
         ]);
+    }
+
+    private function existingSubmission(array $data): ?HospitalLetter
+    {
+        if (empty($data['submission_key'])) return null;
+        $existing = HospitalLetter::withTrashed()->where('submission_key', $data['submission_key'])->first();
+        if (! $existing) return null;
+        if ($existing->trashed()) {
+            throw ValidationException::withMessages(['submission_key' => 'This saved follow-up was removed. Refresh the page before recording another follow-up.']);
+        }
+        if ((int) $existing->referral_id !== (int) $data['referral_id'] || $existing->outcome !== $data['outcome']
+            || ($existing->content_summary ?? '') !== ($data['content_summary'] ?? '')
+            || ($existing->next_appointment_date ?? '') !== ($data['next_appointment_date'] ?? '')
+            || ($existing->outcome === 'Transferred' && (int) $existing->transferredReferral?->hospital_id !== (int) ($data['hospital_id'] ?? 0))) {
+            throw ValidationException::withMessages(['submission_key' => 'This submission was already saved with different details. Refresh the page before recording another follow-up.']);
+        }
+        return $existing;
     }
 
     /**
@@ -329,7 +347,7 @@ class HospitalLetterController extends Controller
     /**
      * Update the specified resource in storage.
      */
-    public function updateHospitalLetter(Request $request, $id)
+    public function updateHospitalLetter(Request $request, $id, TransferReferralService $transfers)
     {
         $user = auth()->user();
         if (!$user->can('Update Hospital Letter')) {
@@ -358,14 +376,49 @@ class HospitalLetterController extends Controller
 
         // Validate input
         $validated = $request->validate([
-            'outcome'         => 'nullable|string',
+            'outcome'         => 'nullable|in:Follow-up,Finished,Transferred,Death',
             'followup_date'   => 'nullable|date',
             'content_summary' => 'nullable|string',
             'hospital_id'     => 'nullable|numeric|exists:hospitals,hospital_id',
+            'next_appointment_date' => 'nullable|date',
         ]);
 
         // Outcome fallback (never null)
         $outcome = $validated['outcome'] ?? $letter->outcome ?? 'Follow-up';
+
+        if ($letter->transferred_referral_id && $outcome !== 'Transferred') {
+            throw ValidationException::withMessages(['outcome' => 'This entry already has a hospital transfer. Record a new follow-up to change the treatment outcome.']);
+        }
+
+        if ($outcome === 'Transferred') {
+            $hospitalId = $validated['hospital_id'] ?? $letter->transferredReferral?->hospital_id;
+            $appointment = $validated['next_appointment_date'] ?? $letter->next_appointment_date;
+            if (! $hospitalId || ! $appointment) {
+                throw ValidationException::withMessages(['hospital_id' => 'Select the transfer hospital and its next appointment date.']);
+            }
+            $letter = DB::transaction(function () use ($letter, $referral, $validated, $hospitalId, $appointment, $transfers): HospitalLetter {
+                $referral = Referral::whereKey($referral->getKey())->lockForUpdate()->firstOrFail();
+                $letter = HospitalLetter::whereKey($letter->getKey())->lockForUpdate()->firstOrFail();
+                // Legacy transferred entries must be repaired before editing; do not create a second child.
+                if ($letter->outcome === 'Transferred' && ! $letter->transferred_referral_id) {
+                    throw ValidationException::withMessages(['outcome' => 'This existing transfer needs a verified referral link before it can be edited.']);
+                }
+                $letter->update([
+                    'outcome' => 'Transferred',
+                    'content_summary' => $validated['content_summary'] ?? $letter->content_summary,
+                    'next_appointment_date' => $appointment,
+                ]);
+                $transfers->create($letter, $referral, (int) $hospitalId, (int) Auth::id());
+                FollowUp::updateOrCreate(['letter_id' => $letter->getKey()], [
+                    'patient_id' => $referral->patient_id,
+                    'followup_date' => $validated['followup_date'] ?? now()->toDateString(),
+                    'notes' => $letter->content_summary,
+                    'followup_status' => 'Transferred',
+                ]);
+                return $letter;
+            });
+            return response()->json(['message' => 'Hospital Letter updated successfully', 'letter' => $letter, 'statusCode' => 200]);
+        }
 
         // Follow-up date fallback
         $followupDate = $validated['followup_date'] ?? now()->toDateString();

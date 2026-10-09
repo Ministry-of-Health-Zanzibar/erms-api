@@ -5,8 +5,10 @@ namespace App\Http\Controllers\API\Report;
 use App\Http\Controllers\Controller;
 use App\Http\Helpers\Helper;
 use App\Models\PatientHistory;
+use App\Services\Reports\CaseReport;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -373,6 +375,15 @@ class ReportController extends Controller
                 'message' => 'Referral not found',
                 'statusCode' => 404,
             ], 404);
+        }
+
+        $history = $referral->patientHistory()->where('patient_id', $referral->patient_id)
+            ->with(['diagnoses', 'boardDiagnoses', 'reason', 'boardReason'])->first();
+        $referral->case_history = $history;
+        $referral->history_id = $history?->patient_histories_id;
+        $referral->case_link_resolved = $history !== null;
+        if ($referral->patient) {
+            $referral->patient->setRelation('patientHistories', collect($history ? [$history] : []));
         }
 
         return response()->json([
@@ -1231,6 +1242,59 @@ class ReportController extends Controller
 
     // PRINTABLE REPORT ========================================================================//
 
+    /**
+     * Small dashboard endpoint used by the case-status chart.
+     *
+     * Keep this separate from the complete workflow report because the chart
+     * only needs patient-history counts. Loading referral aggregates here made
+     * the first dashboard chart wait for an unrelated query.
+     */
+    public function caseStatusTracking(Request $request, CaseReport $cases)
+    {
+        $user = auth()->user();
+
+        if (! $user->can('View Referral Dashboard')) {
+            return response()->json([
+                'message' => 'Forbidden',
+                'statusCode' => 403,
+            ], 403);
+        }
+
+        $filters = $request->validate([
+            'start_date' => ['nullable', 'date'],
+            'end_date' => ['nullable', 'date', 'before_or_equal:today', ...($request->filled('start_date') ? ['after_or_equal:start_date'] : [])],
+            'source_hospital_ids' => ['nullable', 'array'],
+            'source_hospital_ids.*' => ['integer', 'exists:hospitals,hospital_id'],
+            'patient_history_status' => ['nullable', 'in:pending,reviewed,assigned,requested,approved,confirmed,boarded_out,rejected,under_review'],
+            'include_archived' => ['sometimes', 'boolean'],
+            'refresh' => ['sometimes', 'boolean'],
+        ]);
+        $cacheKey = 'dashboard.case-status-tracking.v2.'.$user->id.'.'.hash('sha256', json_encode(array_diff_key($filters, ['refresh' => true])));
+
+        try {
+            if ($request->boolean('refresh')) {
+                Cache::forget($cacheKey);
+            }
+            $report = Cache::remember(
+                $cacheKey,
+                now()->addSeconds(15),
+                fn (): array => [
+                    'medical_history' => $cases->summary($filters, $user),
+                    'generated_at' => now()->toIso8601String(),
+                    'date_basis' => 'Case submission date',
+                    'include_archived' => $request->boolean('include_archived'),
+                ]
+            );
+
+            return response()->json([
+                'data' => $report,
+                'statusCode' => 200,
+            ]);
+        } catch (\Throwable $e) {
+            return Helper::serverError($e, 'Failed to load case status tracking.');
+        }
+    }
+
     public function workflowStatusReport()
     {
         $user = auth()->user();
@@ -1244,130 +1308,82 @@ class ReportController extends Controller
 
         try {
 
-            /*
-            |--------------------------------------------------------------------------
-            | Medical Board Workflow
-            |--------------------------------------------------------------------------
-            */
-            $medicalBoardCounts = DB::table('patient_histories')
-                ->whereNull('deleted_at')
-                ->selectRaw('status, COUNT(*) as total')
-                ->groupBy('status')
-                ->pluck('total', 'status');
+            $report = Cache::remember(
+                'dashboard.workflow-status-report.v5',
+                now()->addSeconds(15),
+                function (): array {
+                    // patient_histories.status is now the canonical case
+                    // status. Referral and boarded-out records are related
+                    // details and are not joined into this case count.
+                    $medicalHistory = $this->buildCaseStatusTrackingReport();
 
-            $boardedOutPatientCount = DB::table('boarded_out_letters')
-                ->join(
-                    'patient_histories',
-                    'patient_histories.patient_histories_id',
-                    '=',
-                    'boarded_out_letters.patient_histories_id'
-                )
-                ->whereNotNull('boarded_out_letters.patient_histories_id')
-                ->whereNull('patient_histories.deleted_at')
-                ->distinct()
-                ->count('patient_histories.patient_id');
-
-            $patientStatusTracking = collect(PatientHistory::STATUS_MAP)
-                ->map(function (array $tracking, string $status) use ($medicalBoardCounts, $boardedOutPatientCount) {
-                    $count = (int) ($medicalBoardCounts[$status] ?? 0);
-
-                    // A boarded-out patient history is stored as confirmed, so present
-                    // it as its own terminal outcome instead of counting it twice.
-                    if ($status === 'confirmed') {
-                        $count = max(0, $count - $boardedOutPatientCount);
-                    }
+                    $referrals = DB::table('referrals')
+                        ->whereNull('deleted_at')
+                        ->selectRaw("
+                            COUNT(*) as total,
+                            COUNT(CASE WHEN status='Confirmed' THEN 1 END) as confirmed,
+                            COUNT(CASE WHEN status='Cancelled' THEN 1 END) as cancelled,
+                            COUNT(CASE WHEN status='Closed' THEN 1 END) as closed,
+                            COUNT(CASE WHEN status='Transferred' THEN 1 END) as transferred,
+                            COUNT(CASE WHEN status='Death' THEN 1 END) as death,
+                            COUNT(CASE WHEN status='Expired' THEN 1 END) as expired,
+                            COUNT(CASE WHEN status='BoardedOut' THEN 1 END) as boarded_out
+                        ")
+                        ->first();
 
                     return [
-                        'status' => $status,
-                        'stage' => $tracking['stage'],
-                        'label' => $tracking['label'],
-                        'current_holder' => $tracking['current_holder'],
-                        'description' => $tracking['description'],
-                        'progress_percentage' => (int) round(($tracking['stage'] / 6) * 100),
-                        'count' => $count,
-                    ];
-                })
-                ->values();
-
-            $patientStatusTracking->push([
-                'status' => 'boarded_out',
-                'stage' => 6,
-                'label' => 'Boarded Out',
-                'current_holder' => 'Completed',
-                'description' => 'Patient completed the process with a boarded-out decision',
-                'progress_percentage' => 100,
-                'count' => $boardedOutPatientCount,
-            ]);
-
-            /*
-            |--------------------------------------------------------------------------
-            | Referral Workflow
-            |--------------------------------------------------------------------------
-            */
-            $referrals = DB::table('referrals')
-                ->whereNull('deleted_at')
-                ->selectRaw("
-                    COUNT(*) as total,
-                    COUNT(CASE WHEN status='Confirmed' THEN 1 END) as confirmed,
-                    COUNT(CASE WHEN status='Cancelled' THEN 1 END) as cancelled,
-                    COUNT(CASE WHEN status='Closed' THEN 1 END) as closed,
-                    COUNT(CASE WHEN status='Transferred' THEN 1 END) as transferred,
-                    COUNT(CASE WHEN status='Death' THEN 1 END) as death,
-                    COUNT(CASE WHEN status='Expired' THEN 1 END) as expired,
-                    COUNT(CASE WHEN status='BoardedOut' THEN 1 END) as boarded_out
-                ")
-                ->first();
-
-            return response()->json([
-                'data' => [
-
-                    'medical_history' => [
-                        'total' => (int) $medicalBoardCounts->sum(),
-                        'statuses' => $patientStatusTracking,
-                    ],
-
-                    'referrals' => [
-                        'total' => (int) $referrals->total,
-
-                        'statuses' => [
-                            [
-                                'stage' => 'Confirmed',
-                                'count' => (int) $referrals->confirmed,
-                            ],
-                            [
-                                'stage' => 'Cancelled',
-                                'count' => (int) $referrals->cancelled,
-                            ],
-                            [
-                                'stage' => 'Closed',
-                                'count' => (int) $referrals->closed,
-                            ],
-                            [
-                                'stage' => 'Transferred',
-                                'count' => (int) $referrals->transferred,
-                            ],
-                            [
-                                'stage' => 'Death',
-                                'count' => (int) $referrals->death,
-                            ],
-                            [
-                                'stage' => 'Expired',
-                                'count' => (int) $referrals->expired,
-                            ],
-                            [
-                                'stage' => 'Boarded Out',
-                                'count' => (int) $referrals->boarded_out,
+                        'medical_history' => $medicalHistory,
+                        'referrals' => [
+                            'total' => (int) $referrals->total,
+                            'statuses' => [
+                                ['stage' => 'Confirmed', 'count' => (int) $referrals->confirmed],
+                                ['stage' => 'Cancelled', 'count' => (int) $referrals->cancelled],
+                                ['stage' => 'Closed', 'count' => (int) $referrals->closed],
+                                ['stage' => 'Transferred', 'count' => (int) $referrals->transferred],
+                                ['stage' => 'Death', 'count' => (int) $referrals->death],
+                                ['stage' => 'Expired', 'count' => (int) $referrals->expired],
+                                ['stage' => 'Boarded Out', 'count' => (int) $referrals->boarded_out],
                             ],
                         ],
-                    ],
-                ],
+                    ];
+                }
+            );
 
+            return response()->json([
+                'data' => $report,
                 'statusCode' => 200,
-
             ]);
 
         } catch (\Throwable $e) {
             return Helper::serverError($e, 'Failed to generate workflow report.');
         }
+    }
+
+    private function buildCaseStatusTrackingReport(): array
+    {
+        $medicalBoardCounts = DB::table('patient_histories')
+            ->whereNull('deleted_at')
+            ->selectRaw('status, COUNT(*) as total')
+            ->groupBy('status')
+            ->pluck('total', 'status');
+
+        $patientStatusTracking = collect(PatientHistory::STATUS_MAP)
+            ->map(function (array $tracking, string $status) use ($medicalBoardCounts) {
+                return [
+                    'status' => $status,
+                    'stage' => $tracking['stage'],
+                    'label' => $tracking['label'],
+                    'current_holder' => $tracking['current_holder'],
+                    'description' => $tracking['description'],
+                    'progress_percentage' => (int) round(($tracking['stage'] / 6) * 100),
+                    'count' => (int) ($medicalBoardCounts[$status] ?? 0),
+                ];
+            })
+            ->values();
+
+        return [
+            'total' => (int) $medicalBoardCounts->sum(),
+            'statuses' => $patientStatusTracking,
+        ];
     }
 }

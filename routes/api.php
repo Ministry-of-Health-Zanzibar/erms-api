@@ -133,6 +133,7 @@ Route::middleware(['auth:sanctum', 'not.blocked'])->group(function () {
     Route::post('reports/export/{format}', [ReportingController::class, 'export'])->whereIn('format', ['xlsx', 'pdf', 'docx']);
     Route::get('reports/top-diagnoses', \App\Http\Controllers\API\Report\TopDiagnosesController::class);
     Route::get('reports/referrals/{patientId}', [ReportController::class, 'referralReport']);
+    Route::get('reports/caseStatusTracking', [ReportController::class, 'caseStatusTracking']);
     Route::get('reports/workflowStatusReport', [ReportController::class, 'workflowStatusReport']);
     Route::get('reports/referralsByType', [ReportController::class, 'referralReportByReferralType']);
     Route::get('reports/referralsByReason', [ReportController::class, 'referralsReportByReason']);

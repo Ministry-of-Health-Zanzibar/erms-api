@@ -37,10 +37,8 @@ class PatientHistoryWorkflowService
 
     /**
      * Capture the patient-history state and, when requested, the related
-     * referral tree. Referral rows are linked to patients in the legacy
-     * schema rather than to a specific history, so callers that are changing
-     * a known referral should pass its tree IDs to avoid snapshotting an
-     * unrelated active case for the same patient.
+     * referral tree for this exact case. Callers changing one referral can
+     * pass its tree IDs to keep the snapshot limited to that referral branch.
      */
     public function snapshot(PatientHistory $history, ?array $referralIds = null): array
     {
@@ -49,7 +47,7 @@ class PatientHistoryWorkflowService
             ->first();
 
         $referralIds = $referralIds === null
-            ? $this->referralTreeIds((int) $history->patient_id)
+            ? $this->referralTreeIds((int) $history->patient_histories_id)
             : collect($referralIds)->map(fn ($id) => (int) $id)->filter()->unique()->values()->all();
         $tables = [
             'patient_histories' => [
@@ -296,10 +294,10 @@ class PatientHistoryWorkflowService
         });
     }
 
-    private function referralTreeIds(int $patientId): array
+    private function referralTreeIds(int $historyId): array
     {
         $rootIds = DB::table('referrals')
-            ->where('patient_id', $patientId)
+            ->where('patient_histories_id', $historyId)
             ->whereNotIn('status', self::TERMINAL_REFERRAL_STATUSES)
             ->pluck('referral_id')
             ->map(fn ($id) => (int) $id)

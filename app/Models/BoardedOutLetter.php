@@ -13,6 +13,7 @@ class BoardedOutLetter extends Model
 
     protected $fillable = [
         'patient_histories_id',
+        'referral_id',
         'receiver',
         'reference_number',
         'reference_date',
@@ -41,6 +42,11 @@ class BoardedOutLetter extends Model
     public function patientHistory()
     {
         return $this->belongsTo(PatientHistory::class, 'patient_histories_id', 'patient_histories_id');
+    }
+
+    public function referral()
+    {
+        return $this->belongsTo(Referral::class, 'referral_id', 'referral_id');
     }
 
     public function printedBy()

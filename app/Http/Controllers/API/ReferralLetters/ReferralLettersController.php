@@ -192,6 +192,7 @@ class ReferralLettersController extends Controller
                 'nullable',
                 'required_if:status,Confirmed,Cancelled,Confirmed and BoardedOut',
                 'numeric',
+                'exists:referrals,referral_id',
             ],
 
             'patient_histories_id' => [
@@ -252,14 +253,38 @@ class ReferralLettersController extends Controller
 
                 /*
                 |--------------------------------------------------------------------------
-                | CHECK EXISTING REFERRAL
+                | RESOLVE THE SELECTED REFERRAL
                 |--------------------------------------------------------------------------
                 */
-                $existingReferral = Referral::where('patient_id', $patientHistory->patient_id)
-                    ->whereNotIn('status', ['Cancelled'])
-                    ->latest()
+                $existingReferral = ! empty($data['referral_id'])
+                    ? Referral::query()
+                        ->where('referral_id', $data['referral_id'])
+                        ->where('patient_id', $patientHistory->patient_id)
+                        ->where('patient_histories_id', $patientHistory->patient_histories_id)
+                        ->lockForUpdate()
+                        ->firstOrFail()
+                    : Referral::where('patient_id', $patientHistory->patient_id)
+                        ->where('patient_histories_id', $patientHistory->patient_histories_id)
+                        ->whereNotIn('status', ['Cancelled'])
+                        ->latest()
+                        ->lockForUpdate()
+                        ->first();
+
+                $existingBoardedOutLetter = BoardedOutLetter::query()
+                    ->where('patient_histories_id', $patientHistory->patient_histories_id)
                     ->lockForUpdate()
+                    ->latest('id')
                     ->first();
+
+                if ($existingBoardedOutLetter) {
+                    DB::rollBack();
+
+                    return response([
+                        'message' => 'This case already has a boarded-out record.',
+                        'statusCode' => 409,
+                    ], 409);
+                }
+
                 $fromStatus = $patientHistory->status;
                 $beforeReferralIds = $existingReferral
                     ? $workflow->referralTreeSnapshotIds($existingReferral->referral_id)
@@ -272,7 +297,7 @@ class ReferralLettersController extends Controller
                 |--------------------------------------------------------------------------
                 */
                 $patientHistory->update([
-                    'status' => 'confirmed',
+                    'status' => 'boarded_out',
                     'dg_id' => $user->id,
                 ]);
 
@@ -283,6 +308,7 @@ class ReferralLettersController extends Controller
                 */
                 $boardedOut = BoardedOutLetter::create([
                     'patient_histories_id' => $data['patient_histories_id'],
+                    'referral_id' => $existingReferral?->referral_id,
                     'receiver' => $data['receiver'],
                     'reference_number' => $data['reference_number'],
                     'reference_date' => $data['reference_date'],
@@ -341,6 +367,11 @@ class ReferralLettersController extends Controller
             $referral = Referral::query()
                 ->lockForUpdate()
                 ->findOrFail($referralId);
+            $linkedHistory = app(\App\Services\ReferralCaseLinker::class)->requireHistory($referral);
+            if (! empty($data['patient_histories_id']) && (int) $data['patient_histories_id'] !== (int) $linkedHistory->patient_histories_id) {
+                DB::rollBack();
+                return response()->json(['message' => 'The selected history does not belong to this referral case.', 'statusCode' => 422], 422);
+            }
             if ($data['status'] === 'Confirmed and BoardedOut') {
 
                 $patientHistory = PatientHistory::query()
@@ -349,6 +380,22 @@ class ReferralLettersController extends Controller
                     ->lockForUpdate()
                     ->firstOrFail();
                 $workflow = app(PatientHistoryWorkflowService::class);
+
+                $existingBoardedOutLetter = BoardedOutLetter::query()
+                    ->where('patient_histories_id', $patientHistory->patient_histories_id)
+                    ->lockForUpdate()
+                    ->latest('id')
+                    ->first();
+
+                if ($existingBoardedOutLetter) {
+                    DB::rollBack();
+
+                    return response([
+                        'message' => 'This case already has a boarded-out record.',
+                        'statusCode' => 409,
+                    ], 409);
+                }
+
                 $fromStatus = $patientHistory->status;
                 $beforeReferralIds = $workflow->referralTreeSnapshotIds($referral->referral_id);
                 $beforeSnapshot = $workflow->snapshot($patientHistory, $beforeReferralIds);
@@ -359,7 +406,7 @@ class ReferralLettersController extends Controller
                 |--------------------------------------------------------------------------
                 */
                 $patientHistory->update([
-                    'status' => 'confirmed',
+                    'status' => 'boarded_out',
                     'dg_comments' => $data['letter_text'] ?? null,
                     'dg_id' => $user->id,
                 ]);
@@ -377,6 +424,7 @@ class ReferralLettersController extends Controller
                 */
                 $boardedOut = BoardedOutLetter::create([
                     'patient_histories_id' => $data['patient_histories_id'],
+                    'referral_id' => $referral->referral_id,
                     'receiver' => $data['receiver'],
                     'reference_number' => $data['reference_number'],
                     'reference_date' => $data['reference_date'],
@@ -420,6 +468,7 @@ class ReferralLettersController extends Controller
             $workflow = app(PatientHistoryWorkflowService::class);
             $patientHistory = PatientHistory::query()
                 ->where('patient_id', $referral->patient_id)
+                ->where('patient_histories_id', $linkedHistory->patient_histories_id)
                 ->where('status', 'approved')
                 ->latest('created_at')
                 ->lockForUpdate()
@@ -444,7 +493,7 @@ class ReferralLettersController extends Controller
 
             // 3️⃣ Update patient history
             $patientHistory->update([
-                'status' => 'confirmed',
+                'status' => $data['status'] === 'Confirmed' ? 'confirmed' : 'rejected',
                 'dg_comments' => $data['letter_text'] ?? null,
                 'dg_id' => $user->id,
             ]);
@@ -480,6 +529,9 @@ class ReferralLettersController extends Controller
                 'statusCode' => 201,
             ], 201);
 
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            DB::rollBack();
+            throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
 

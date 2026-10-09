@@ -28,8 +28,8 @@
         .signature-wrap { position: relative; width: 100%; min-height: 33mm; margin-top: 3px; page-break-inside: avoid; }
         .signature-cell { display: block; width: 100%; height: 15mm; }
         .signature { position: relative; z-index: 1; display: block; width: 46mm; height: 14mm; object-fit: contain; object-position: left center; }
-        .stamp-cell { position: absolute; top: 6mm; left: 34mm; z-index: 10; width: 30mm; height: 18mm; text-align: left; }
-        .stamp { position: relative; z-index: 10; display: block; width: 30mm; height: 18mm; object-fit: contain; opacity: 1; }
+        .stamp-cell { position: absolute; top: 3mm; left: 34mm; z-index: 10; width: 45mm; height: 27mm; text-align: left; }
+        .stamp { position: relative; z-index: 10; display: block; width: 45mm; height: 27mm; object-fit: contain; opacity: 1; }
         .signatory { position: relative; z-index: 1; margin-top: 0; }
         .signatory p { margin-bottom: 1px; }
         .footer { margin-top: 6px; text-align: center; color: #444; font-size: 8pt; }

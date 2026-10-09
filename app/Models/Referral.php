@@ -18,6 +18,7 @@ class Referral extends Model
 
     protected $fillable = [
         'patient_id',
+        'patient_histories_id',
         'parent_referral_id',
         'referral_number',
         'hospital_id',
@@ -29,12 +30,12 @@ class Referral extends Model
 
     public function parent()
     {
-        return $this->belongsTo(Referral::class, 'parent_referral_id');
+        return $this->belongsTo(Referral::class, 'parent_referral_id', 'referral_id');
     }
 
     public function children()
     {
-        return $this->hasMany(Referral::class, 'parent_referral_id');
+        return $this->hasMany(Referral::class, 'parent_referral_id', 'referral_id');
     }
 
     /**
@@ -75,6 +76,11 @@ class Referral extends Model
         return $this->belongsTo(Reason::class, 'reason_id', 'reason_id');
     }
 
+    public function patientHistory()
+    {
+        return $this->belongsTo(PatientHistory::class, 'patient_histories_id', 'patient_histories_id');
+    }
+
     public function bills()
     {
         return $this->hasMany(Bill::class, 'referral_id', 'referral_id');
@@ -98,6 +104,11 @@ class Referral extends Model
     public function referralLetters()
     {
         return $this->hasOne(ReferralLetter::class, 'referral_id', 'referral_id');
+    }
+
+    public function boardedOutLetter()
+    {
+        return $this->hasOne(BoardedOutLetter::class, 'referral_id', 'referral_id');
     }
 
     public function referralFlights()

@@ -8,6 +8,9 @@ final class ReportTitleBuilder
 {
     public function title(string $reportType, array $filters, array $labels = []): string
     {
+        if (in_array($reportType, ['case_workflow', 'boarded_out_cases', 'patient_summary'], true)) {
+            return strtoupper(str_replace('_', ' ', $reportType)).' REPORT';
+        }
         if ($reportType === ReportDefinitionRegistry::TOP_DIAGNOSES) {
             $limit = $filters['result_limit'] ?? ($filters['top'] ?? 10);
             $title = $limit === 'all'
@@ -61,6 +64,9 @@ final class ReportTitleBuilder
 
     public function filename(string $reportType, array $filters, string $format, array $labels = []): string
     {
+        if (in_array($reportType, ['case_workflow', 'boarded_out_cases', 'patient_summary'], true)) {
+            return $reportType.'_'.$filters['start_date'].'_to_'.$filters['end_date'].'.'.$format;
+        }
         $base = $reportType === ReportDefinitionRegistry::TOP_DIAGNOSES
             ? (($filters['result_limit'] ?? ($filters['top'] ?? 10)) === 'all'
                 ? 'diagnosis_distribution_report'

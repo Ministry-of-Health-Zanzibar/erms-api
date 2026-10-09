@@ -20,6 +20,10 @@ class ReportModuleTest extends TestCase
         $this->assertSame(['xlsx', 'pdf', 'docx'], $definitions['top_diagnoses']['exports']);
         $this->assertContains('diagnosis', $definitions['top_diagnoses']['filters']);
         $this->assertContains('source_hospital', $definitions['top_diagnoses']['filters']);
+        foreach (['case_workflow', 'boarded_out_cases', 'patient_summary'] as $type) {
+            $this->assertArrayHasKey($type, $definitions);
+            $this->assertContains('include_archived', $definitions[$type]['filters']);
+        }
     }
 
     public function test_filter_normalization_removes_empty_values_and_clamps_report_limits(): void

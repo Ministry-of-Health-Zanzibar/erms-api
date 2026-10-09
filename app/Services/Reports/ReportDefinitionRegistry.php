@@ -9,6 +9,9 @@ final class ReportDefinitionRegistry
     public const TOP_DIAGNOSES = 'top_diagnoses';
 
     public const REFERRALS_BY_HOSPITAL = 'referrals_by_hospital';
+    public const CASE_WORKFLOW = 'case_workflow';
+    public const BOARDED_OUT_CASES = 'boarded_out_cases';
+    public const PATIENT_SUMMARY = 'patient_summary';
 
     /**
      * The public report catalogue. Keep database names out of this structure;
@@ -16,7 +19,7 @@ final class ReportDefinitionRegistry
      */
     public function all(): array
     {
-        return [
+        $reports = [
             self::TOP_DIAGNOSES => [
                 'key' => self::TOP_DIAGNOSES,
                 'name' => 'Top Diagnoses',
@@ -83,6 +86,19 @@ final class ReportDefinitionRegistry
                 'exports' => ['xlsx', 'pdf', 'docx'],
             ],
         ];
+        foreach ([
+            self::CASE_WORKFLOW => ['Case Workflow Report', 'One row per medical history case, with its current workflow status.'],
+            self::BOARDED_OUT_CASES => ['Boarded-out Case Report', 'One row per boarded-out case, with its letter and linked hospital where available.'],
+            self::PATIENT_SUMMARY => ['Patient Summary', 'One row per patient, showing their latest eligible case in the selected period.'],
+        ] as $key => [$name, $description]) {
+            $reports[$key] = [
+                'key' => $key, 'name' => $name, 'description' => $description,
+                'metric' => $key === self::PATIENT_SUMMARY ? 'One patient counted once using their latest eligible case.' : 'One medical history ID counted once; dates use case submission date.',
+                'filters' => ['date_range', 'source_hospital', 'patient_history_status', 'patient_search', 'include_archived'],
+                'exports' => ['xlsx', 'pdf', 'docx'],
+            ];
+        }
+        return $reports;
     }
 
     public function get(string $key): array

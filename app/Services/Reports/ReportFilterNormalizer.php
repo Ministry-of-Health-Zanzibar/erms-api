@@ -58,6 +58,7 @@ final class ReportFilterNormalizer
             'referral_type_id' => $this->nullableInteger($input['referral_type_id'] ?? null),
             'patient_history_status' => $this->nullableString($input['patient_history_status'] ?? null),
             'patient_search' => $this->nullableString($input['patient_search'] ?? null),
+            'include_archived' => filter_var($input['include_archived'] ?? false, FILTER_VALIDATE_BOOLEAN),
             'page' => max((int) ($input['page'] ?? 1), 1),
             'per_page' => min(max((int) ($input['per_page'] ?? 25), 1), 100),
         ];

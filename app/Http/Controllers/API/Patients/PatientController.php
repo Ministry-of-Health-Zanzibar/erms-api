@@ -284,6 +284,7 @@ class PatientController extends Controller
                     WHEN latest_history.latest_status_text = 'assigned' THEN ".($isMkurugenzi ? '4' : '3')."
                     WHEN latest_history.latest_status_text = 'approved' THEN 5
                     WHEN latest_history.latest_status_text = 'confirmed' THEN 6
+                    WHEN latest_history.latest_status_text = 'boarded_out' THEN 6
                     WHEN latest_history.latest_status_text = 'rejected' THEN 7
                     ELSE 8
                 END ASC
@@ -850,6 +851,7 @@ class PatientController extends Controller
 
             $referral = \App\Models\Referral::create([
                 'patient_id' => $patient->patient_id,
+                'patient_histories_id' => $patientHistory->patient_histories_id,
                 'reason_id' => $reasonId,
                 'status' => 'Requested',
                 'referral_number' => $referralNumber,

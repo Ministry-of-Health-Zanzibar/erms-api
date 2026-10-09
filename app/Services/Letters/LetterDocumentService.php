@@ -10,6 +10,8 @@ use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -39,6 +41,7 @@ class LetterDocumentService
         return HospitalLetter::with([
             'referral.patient',
             'referral.hospital.referralType',
+            'transferredReferral.referralLetters',
         ])->find($letterId);
     }
 
@@ -83,14 +86,14 @@ class LetterDocumentService
             : self::LANGUAGE_SWAHILI;
     }
 
-    public function renderReferral(ReferralLetter $letter, string $language)
+    public function renderReferral(ReferralLetter $letter, string $language): string
     {
         $referral = $letter->referral;
 
         $patientAge = $this->patientAge($referral?->patient?->date_of_birth);
         $branding = $this->branding->effectiveAssets();
 
-        return Pdf::loadView('letters.referral', [
+        return $this->renderPdf('letters.referral', [
             'letter' => $letter,
             'referral' => $referral,
             'language' => $language,
@@ -108,23 +111,17 @@ class LetterDocumentService
             'dgEmail' => 'dg@mohz.go.tz',
             'permanentSecretary' => 'ps@mohz.go.tz',
             'startDate' => $this->formatDate($letter->start_date),
-        ])
-            ->setPaper('a4', 'portrait')
-            ->setOptions([
-                'isHtml5ParserEnabled' => true,
-                'isRemoteEnabled' => false,
-                'defaultFont' => 'DejaVu Sans',
-            ]);
+        ]);
     }
 
-    public function renderFollowUp(HospitalLetter $letter, string $language)
+    public function renderFollowUp(HospitalLetter $letter, string $language): string
     {
         $referral = $letter->referral;
 
         $patientAge = $this->patientAge($referral?->patient?->date_of_birth);
         $branding = $this->branding->effectiveAssets();
 
-        return Pdf::loadView('letters.follow-up', [
+        return $this->renderPdf('letters.follow-up', [
             'letter' => $letter,
             'referral' => $referral,
             'language' => $language,
@@ -137,23 +134,17 @@ class LetterDocumentService
             'dgEmail' => 'dg@mohz.go.tz',
             'permanentSecretary' => 'ps@mohz.go.tz',
             'referenceDate' => $this->formatDate($letter->next_appointment_date, 'd-m-Y'),
-        ])
-            ->setPaper('a4', 'portrait')
-            ->setOptions([
-                'isHtml5ParserEnabled' => true,
-                'isRemoteEnabled' => false,
-                'defaultFont' => 'DejaVu Sans',
-            ]);
+        ]);
     }
 
-    public function renderBoardedOut(BoardedOutLetter $letter, string $language)
+    public function renderBoardedOut(BoardedOutLetter $letter, string $language): string
     {
         $history = $letter->patientHistory;
         $patient = $history?->patient;
         $boardDate = $patient?->patientList?->first()?->board_date;
         $branding = $this->branding->effectiveAssets();
 
-        return Pdf::loadView('letters.boarded-out', [
+        return $this->renderPdf('letters.boarded-out', [
             'letter' => $letter,
             'history' => $history,
             'patient' => $patient,
@@ -165,13 +156,44 @@ class LetterDocumentService
             'email' => 'info@mohz.go.tz',
             'dgEmail' => 'dg@mohz.go.tz',
             'permanentSecretary' => 'ps@mohz.go.tz',
-        ])
+        ]);
+    }
+
+    private function renderPdf(string $view, array $data): string
+    {
+        // Render current data before checking the cache. Template, language,
+        // patient, hospital, flight, age/date and branding changes all produce
+        // a different key; print-audit-only updates do not rebuild the PDF.
+        $html = view($view, $data)->render();
+        $key = 'letter-pdf:v1:' . hash('sha256', $view . ':' . $data['letter']->getKey()
+            . ':' . json_encode(config('dompdf.options', [])) . ':' . $html);
+
+        try {
+            $cached = Cache::get($key);
+            if (is_string($cached)) {
+                return Crypt::decryptString($cached);
+            }
+        } catch (\Throwable) {
+            // Missing/corrupt cache or a changed encryption key: render normally.
+        }
+
+        $pdf = Pdf::loadHTML($html)
             ->setPaper('a4', 'portrait')
             ->setOptions([
                 'isHtml5ParserEnabled' => true,
                 'isRemoteEnabled' => false,
                 'defaultFont' => 'DejaVu Sans',
-            ]);
+            ])->output();
+
+        try {
+            // Cache only encrypted bytes in the private server cache. Every
+            // request still authenticates and resolves the active letter first.
+            Cache::put($key, Crypt::encryptString($pdf), now()->addMinutes(10));
+        } catch (\Throwable) {
+            // Preview remains available even if caching/encryption is unavailable.
+        }
+
+        return $pdf;
     }
 
     public function recordPrint(Model $letter, string $letterType, string $language, Request $request): LetterPrintEvent

@@ -5,6 +5,7 @@ namespace App\Services\Letters;
 use App\Models\LetterBrandingSetting;
 use App\Models\User;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -26,9 +27,23 @@ class LetterBrandingService
         $setting = $this->currentSetting();
         $signaturePath = $setting?->signature_path ?: self::DEFAULT_SIGNATURE;
         $stampPath = $setting?->stamp_path ?: self::DEFAULT_STAMP;
+        // Fingerprint the files as well as their paths, so even replacing an
+        // asset in place immediately invalidates the prepared branding.
+        $cacheKey = 'letter-branding:v2:' . hash('sha256', json_encode([
+            $signaturePath, $this->assetFingerprint($signaturePath),
+            $stampPath, $this->assetFingerprint($stampPath),
+        ]));
+        try {
+            $cached = Cache::get($cacheKey);
+            if (is_array($cached)) {
+                return $cached;
+            }
+        } catch (\Throwable) {
+            // A cache outage must not prevent an official letter being prepared.
+        }
         $signatureColor = $this->dominantInkColor($signaturePath);
 
-        return [
+        $assets = [
             'signatureData' => $this->dataUri($signaturePath),
             // Uploaded and bundled stamps may include a scanned paper
             // background. Remove that background before embedding the stamp so
@@ -37,6 +52,13 @@ class LetterBrandingService
             'signaturePath' => $signaturePath,
             'stampPath' => $stampPath,
         ];
+        try {
+            Cache::put($cacheKey, $assets, now()->addDay());
+        } catch (\Throwable) {
+            // Return the freshly prepared assets when caching is unavailable.
+        }
+
+        return $assets;
     }
 
     public function summary(): array
@@ -132,6 +154,13 @@ class LetterBrandingService
         return 'data:' . $mime . ';base64,' . base64_encode((string) file_get_contents($absolutePath));
     }
 
+    private function assetFingerprint(string $path): string
+    {
+        $absolutePath = public_path(ltrim($path, '/'));
+
+        return is_file($absolutePath) ? (hash_file('sha256', $absolutePath) ?: 'unreadable') : 'missing';
+    }
+
     private function dominantInkColor(string $path): array
     {
         $absolutePath = public_path(ltrim($path, '/'));
@@ -211,6 +240,12 @@ class LetterBrandingService
         imagesavealpha($output, true);
         $transparent = imagecolorallocatealpha($output, 255, 255, 255, 127);
         imagefill($output, 0, 0, $transparent);
+        // Only 128 alpha values are possible. Reuse them instead of allocating
+        // the same ink color again for every pixel in the scanned stamp.
+        $colors = [];
+        for ($alpha = 0; $alpha <= 127; $alpha++) {
+            $colors[$alpha] = imagecolorallocatealpha($output, $inkColor[0], $inkColor[1], $inkColor[2], $alpha);
+        }
 
         for ($y = 0; $y < $height; $y++) {
             for ($x = 0; $x < $width; $x++) {
@@ -234,8 +269,7 @@ class LetterBrandingService
                     $alpha = max($sourceAlpha, 127 - (int) round($inkStrength * 127));
                 }
 
-                $color = imagecolorallocatealpha($output, $inkColor[0], $inkColor[1], $inkColor[2], $alpha);
-                imagesetpixel($output, $x, $y, $color);
+                imagesetpixel($output, $x, $y, $colors[$alpha]);
             }
         }
 

@@ -80,7 +80,7 @@ class GenerateReportRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'report_type' => ['required', 'string', Rule::in(['top_diagnoses', 'referrals_by_hospital'])],
+            'report_type' => ['required', 'string', Rule::in(['top_diagnoses', 'referrals_by_hospital', 'case_workflow', 'boarded_out_cases', 'patient_summary'])],
             'start_date' => ['required', 'date', 'before_or_equal:end_date'],
             'end_date' => ['required', 'date', 'before_or_equal:today'],
             'top' => ['nullable', 'integer', Rule::in([5, 10, 20, 50, 100])],
@@ -104,7 +104,8 @@ class GenerateReportRequest extends FormRequest
             'hospital_id' => ['nullable', 'integer', Rule::exists('hospitals', 'hospital_id')->whereNull('deleted_at')],
             'referral_status' => ['nullable', 'string', Rule::in(['Pending', 'Confirmed', 'Death', 'Cancelled', 'Transferred', 'Expired', 'Closed', 'Requested', 'BoardedOut'])],
             'referral_type_id' => ['nullable', 'integer', Rule::exists('referral_types', 'referral_type_id')->whereNull('deleted_at')],
-            'patient_history_status' => ['nullable', 'string', Rule::in(['pending', 'reviewed', 'assigned', 'requested', 'approved', 'confirmed', 'rejected'])],
+            'patient_history_status' => ['nullable', 'string', Rule::in(['pending', 'reviewed', 'assigned', 'requested', 'approved', 'confirmed', 'boarded_out', 'rejected', 'under_review'])],
+            'include_archived' => ['sometimes', 'boolean'],
             'patient_search' => ['nullable', 'string', 'max:120'],
             'page' => ['nullable', 'integer', 'min:1'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],

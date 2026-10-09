@@ -370,6 +370,7 @@ class PatientHistoryController extends Controller
 
             $blockedHistoryStatuses = [
                 'confirmed',
+                'boarded_out',
                 'rejected',
             ];
 
@@ -902,6 +903,7 @@ class PatientHistoryController extends Controller
 
                 $referral = Referral::create([
                     'patient_id' => $history->patient_id,
+                    'patient_histories_id' => $history->patient_histories_id,
                     'reason_id' => $boardReasonId,
                     'status' => 'Requested',
                     'referral_number' => $referralNumber,
@@ -1005,6 +1007,7 @@ class PatientHistoryController extends Controller
 
             $referral = Referral::query()
                 ->where('patient_id', $history->patient_id)
+                ->where('patient_histories_id', $history->patient_histories_id)
                 ->whereNotIn('status', ['Closed', 'Cancelled', 'Expired', 'BoardedOut'])
                 ->latest('referral_id')
                 ->lockForUpdate()
@@ -1048,6 +1051,7 @@ class PatientHistoryController extends Controller
 
                     $referral = Referral::create([
                         'patient_id' => $history->patient_id,
+                        'patient_histories_id' => $history->patient_histories_id,
                         'reason_id' => $boardReasonId,
                         'status' => $newReferralStatus,
                         'referral_number' => $referralNumber,
@@ -1352,6 +1356,7 @@ class PatientHistoryController extends Controller
             $referral = Referral::query()
                 ->where('patient_id', $history->patient_id)
                 ->where('status', 'Requested')
+                ->where('patient_histories_id', $history->patient_histories_id)
                 ->latest('referral_id')
                 ->lockForUpdate()
                 ->first();

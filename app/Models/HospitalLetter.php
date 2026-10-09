@@ -22,6 +22,8 @@ class HospitalLetter extends Model
         'next_appointment_date',
         'letter_file',
         'outcome',
+        'transferred_referral_id',
+        'submission_key',
         'is_printed',
         'printed_at',
         'printed_by',
@@ -43,6 +45,11 @@ class HospitalLetter extends Model
     public function followups()
     {
         return $this->hasMany(FollowUp::class, 'letter_id', 'letter_id');
+    }
+
+    public function transferredReferral()
+    {
+        return $this->belongsTo(Referral::class, 'transferred_referral_id', 'referral_id');
     }
 
     public function printedBy()

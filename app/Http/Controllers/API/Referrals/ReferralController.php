@@ -101,7 +101,7 @@ class ReferralController extends Controller
         // Build a small candidate query first. The list is grouped by
         // referral_number and also contains virtual history rows, so loading
         // every full referral and related model before grouping was expensive.
-        $query = Referral::query()->where('status', '<>', 'Requested');
+        $query = Referral::query()->where('status', '<>', 'Requested')->whereHas('patient');
 
         // DG and administrators must be able to see referrals created from
         // hospital/data-entry patients as well as referrals from other users.
@@ -156,11 +156,13 @@ class ReferralController extends Controller
             ->groupBy('referral_number');
 
         $virtualQuery = PatientHistory::query()
+            ->whereHas('patient')
             ->whereDoesntHave('referrals')
             ->whereDoesntHave('boardedOutLetters')
             ->whereIn('status', ['requested', 'approved']);
 
         $boardedOutQuery = PatientHistory::query()
+            ->whereHas('patient')
             ->whereHas('boardedOutLetters')
             ->whereDoesntHave('referrals');
 
@@ -260,34 +262,28 @@ class ReferralController extends Controller
 
         /*
         |--------------------------------------------------------------------------
-        | PRELOAD LATEST HISTORIES
+        | PRELOAD EXACT CASE HISTORIES
         |--------------------------------------------------------------------------
         */
-        $latestHistoryIds = PatientHistory::selectRaw('MAX(patient_histories_id)')
-            ->whereIn('patient_id', $patientIds)
-            ->groupBy('patient_id');
-
-        $latestHistories = PatientHistory::whereIn('patient_histories_id', $latestHistoryIds)
+        $caseIds = $allReferrals->pluck('patient_histories_id')->filter()->unique();
+        $caseHistories = PatientHistory::whereIn('patient_histories_id', $caseIds)
             ->get()
-            ->keyBy('patient_id');
+            ->keyBy('patient_histories_id');
 
         /*
         |--------------------------------------------------------------------------
         | PRELOAD BOARDED OUT LETTERS
         |--------------------------------------------------------------------------
         */
-        $boardedOutLetters = BoardedOutLetter::with(['patientHistory', 'printedBy'])
-            ->whereHas('patientHistory', function ($q) use ($patientIds) {
-                $q->whereIn('patient_id', $patientIds);
-            })
+        $boardedOutLetters = BoardedOutLetter::with([
+                'patientHistory',
+                'printedBy',
+                'referral.hospital',
+            ])
+            ->whereIn('patient_histories_id', $caseIds)
             ->latest()
             ->get()
-            ->groupBy(function ($item) {
-                return $item->patientHistory?->patient_id;
-            })
-            ->map(function ($items) {
-                return $items->first();
-            });
+            ->groupBy('patient_histories_id');
 
         /*
         |--------------------------------------------------------------------------
@@ -297,15 +293,46 @@ class ReferralController extends Controller
         $referrals = $allReferrals
             ->groupBy('referral_number')
             ->map(function ($group) use (
-                $latestHistories,
+                $caseHistories,
                 $boardedOutLetters
             ) {
                 $first = $group->first();
-                $history = $latestHistories[$first->patient_id] ?? null;
-                $boardedOut = $boardedOutLetters[$first->patient_id] ?? null;
+                $linkedCaseIds = $group->pluck('patient_histories_id')->unique();
+                $history = $linkedCaseIds->count() === 1 && $linkedCaseIds->first() !== null
+                    ? ($caseHistories[$first->patient_histories_id] ?? null) : null;
+                if ($history && $group->contains(fn ($ref) => (int) $ref->patient_id !== (int) $history->patient_id)) {
+                    $history = null;
+                }
+                $patientBoardedOutLetters = $history ? ($boardedOutLetters[$history->patient_histories_id] ?? collect()) : collect();
+                $groupReferralIds = $group
+                    ->pluck('referral_id')
+                    ->map(fn ($id) => (int) $id)
+                    ->values();
+                $boardedOut = $patientBoardedOutLetters->first(
+                    fn ($letter) => $letter->referral_id !== null
+                        && $groupReferralIds->contains((int) $letter->referral_id)
+                ) ?? $patientBoardedOutLetters->first(
+                    fn ($letter) => $letter->referral_id === null
+                );
                 $isBoardedOut = $group->contains(function ($ref) {
                     return $ref->status === 'BoardedOut';
-                });
+                }) || $history?->status === 'boarded_out' || $boardedOut !== null;
+                $statusPriority = [
+                    'BoardedOut' => 100,
+                    'Confirmed' => 90,
+                    'Transferred' => 80,
+                    'Death' => 70,
+                    'Closed' => 60,
+                    'Expired' => 50,
+                    'Cancelled' => 40,
+                    'Pending' => 20,
+                    'Requested' => 10,
+                ];
+                $caseStatus = $isBoardedOut || $boardedOut
+                    ? 'BoardedOut'
+                    : ($group->pluck('status')
+                        ->sortByDesc(fn ($status) => $statusPriority[$status] ?? 0)
+                        ->first() ?? 'Pending');
 
                 // ✅ LOGIC MPYA: Angalia kama kuna angalau rufaa moja kwenye kikundi hiki yenye follow-up
                 $groupHasFollowUp = $group->contains(function ($ref) {
@@ -323,10 +350,13 @@ class ReferralController extends Controller
                     'patient' => $first->patient,
                     'diagnoses' => $first->diagnoses,
                     'reason' => $first->reason,
-                    'status' => $group->pluck('status')
-                        ->unique()
-                        ->sort()
-                        ->implode(', '),
+                    // One status is exposed at group level. Individual
+                    // hospital referral statuses remain in the referrals list.
+                    'status' => $caseStatus,
+                    'case_status' => $history?->status,
+                    'case_status_label' => $history?->status_tracking['label'] ?? 'Case link needs review',
+                    'case_link_resolved' => $history !== null,
+                    'record_type' => 'referral',
                     'hospitals' => $group->pluck('hospital')
                         ->unique('hospital_id')
                         ->values(),
@@ -350,6 +380,7 @@ class ReferralController extends Controller
 
                         return [
                             'referral_id' => $ref->referral_id,
+                            'patient_histories_id' => $ref->patient_histories_id,
                             'status' => $ref->status,
                             'hospital_id' => $ref->hospital_id,
                             'hospital' => $ref->hospital,
@@ -358,11 +389,14 @@ class ReferralController extends Controller
                             'has_followup' => $singleRefHasFollowUp, 
                         ];
                     })->values(),
-                    'has_pending' => $group->contains('status', 'Pending'),
+                    'has_pending' => $caseStatus !== 'BoardedOut'
+                        && $group->contains('status', 'Pending'),
                     'latest_activity' => $group->max('created_at'),
                     'is_boarded_out' => $isBoardedOut,
                     'boarded_out' => $boardedOut ? [
                         'id' => $boardedOut->id,
+                        'referral_id' => $boardedOut->referral_id,
+                        'hospital' => $boardedOut->referral?->hospital,
                         'receiver' => $boardedOut->receiver,
                         'reference_number' => $boardedOut->reference_number,
                         'reference_date' => $boardedOut->reference_date,
@@ -425,6 +459,9 @@ class ReferralController extends Controller
                 'has_pending' => true,
                 'latest_activity' => $history->updated_at,
                 'is_recommendation_only' => true,
+                'record_type' => 'history',
+                'case_status' => $history->status,
+                'case_status_label' => $history->status_tracking['label'] ?? $history->status,
                 'history_id' => $history->patient_histories_id,
             ]];
         });
@@ -444,7 +481,8 @@ class ReferralController extends Controller
                 'patient',
                 'diagnoses',
                 'reason',
-                'boardedOutLetters.printedBy'
+                'boardedOutLetters.printedBy',
+                'boardedOutLetters.referral.hospital',
             ])
             ->whereIn('patient_histories_id', $boardedOutHistoryIds)
             ->get()
@@ -477,9 +515,14 @@ class ReferralController extends Controller
                 'has_pending' => !$isBoardedOut,
                 'latest_activity' => $boardedOut?->created_at ?? $history->updated_at,
                 'is_boarded_out' => $isBoardedOut,
+                'record_type' => 'history',
+                'case_status' => $history->status,
+                'case_status_label' => $history->status_tracking['label'] ?? $history->status,
                 'history_id' => $history->patient_histories_id,
                 'boarded_out' => [
                     'id' => $boardedOut?->id,
+                    'referral_id' => $boardedOut?->referral_id,
+                    'hospital' => $boardedOut?->referral?->hospital,
                     'receiver' => $boardedOut?->receiver,
                     'reference_number' => $boardedOut?->reference_number,
                     'reference_date' => $boardedOut?->reference_date,
@@ -1271,6 +1314,7 @@ class ReferralController extends Controller
 
         $validator = Validator::make($request->all(), [
             'patient_id' => ['required', 'numeric', 'exists:patients,patient_id'],
+            'patient_histories_id' => ['nullable', 'integer', 'exists:patient_histories,patient_histories_id'],
             'reason_id'  => ['required', 'numeric', 'exists:reasons,reason_id'],
         ]);
 
@@ -1287,8 +1331,20 @@ class ReferralController extends Controller
         $count = Referral::whereDate('created_at', $today)->count() + 1;
         $referralNumber = 'REF-' . $today . '-' . str_pad($count, 4, '0', STR_PAD_LEFT);
 
+        $historyQuery = PatientHistory::where('patient_id', $request['patient_id']);
+        $history = $request->filled('patient_histories_id')
+            ? $historyQuery->find($request->input('patient_histories_id'))
+            : (clone $historyQuery)->whereIn('status', ['requested', 'approved'])->get();
+        if ($history instanceof \Illuminate\Support\Collection) {
+            $history = $history->count() === 1 ? $history->first() : null;
+        }
+        if (! $history) {
+            return response()->json(['message' => 'Select the medical history case for this referral.', 'statusCode' => 422], 422);
+        }
+
         $referral = Referral::create([
             'patient_id'       => $request['patient_id'],
+            'patient_histories_id' => $history->patient_histories_id,
             'reason_id'        => $request['reason_id'],
             'status'           => 'Pending',
             'referral_number'  => $referralNumber,
@@ -1559,10 +1615,14 @@ class ReferralController extends Controller
             | GET RELATED HISTORY
             |--------------------------------------------------------------------------
             */
-            $history = PatientHistory::with('boardedOutLetters.printedBy')
-                ->where('patient_id', $referral->patient_id)
-                ->latest('created_at')
-                ->first();
+            $history = $referral->patientHistory()->where('patient_id', $referral->patient_id)
+                ->with(['boardedOutLetters.printedBy', 'diagnoses', 'boardDiagnoses', 'reason', 'boardReason'])->first();
+            $referral->case_history = $history;
+            $referral->case_status = $history?->status;
+            $referral->case_link_resolved = $history !== null;
+            if ($referral->patient) {
+                $referral->patient->setRelation('patientHistories', collect($history ? [$history] : []));
+            }
 
             /*
             |--------------------------------------------------------------------------
@@ -1575,7 +1635,7 @@ class ReferralController extends Controller
 
             $referral->history_id = $history?->patient_histories_id;
 
-            $referral->is_boarded_out = !is_null($boardedOutLetter);
+            $referral->is_boarded_out = $history?->status === 'boarded_out' || !is_null($boardedOutLetter);
 
             $referral->boarded_out_letter = $boardedOutLetter;
 
@@ -1681,9 +1741,18 @@ class ReferralController extends Controller
 
             $referral->diagnoses = $history->diagnoses;
             $referral->patient = $history->patient;
+            // Keep the patient at the top level only: the case is also nested
+            // in patientHistories, so retaining its patient relation creates
+            // a circular response when this history view is serialized.
+            $history->unsetRelation('patient');
 
             $referral->is_recommendation_only = true;
             $referral->history_id = $history->patient_histories_id;
+            $referral->case_history = $history;
+            $referral->case_status = $history->status;
+            if ($referral->patient) {
+                $referral->patient->setRelation('patientHistories', collect([$history]));
+            }
         }
 
         else {
@@ -1692,6 +1761,19 @@ class ReferralController extends Controller
                 'statusCode' => 422,
             ], 422);
         }
+
+        // The record page prints the original hospital letter even when the
+        // displayed referral/history points to a newer transfer. Transfer
+        // follow-up printing continues to use the child's own letter.
+        $printSource = $type === 'referral' ? $referral : ($latestReferral ?? null);
+        $original = $printSource ? app(\App\Services\TransferReferralService::class)->originalReferral($printSource) : null;
+        $original?->load('hospital.referralType');
+        $referral->original_referral = $original ? [
+            'referral_id' => $original->getKey(),
+            'hospital_id' => $original->hospital_id,
+            'hospital' => $original->hospital,
+            'status' => $original->status,
+        ] : null;
 
         /**
          * ===================================
@@ -1762,21 +1844,19 @@ class ReferralController extends Controller
             ], 404);
         }
 
-        // 2. Get root referral
-        $rootReferralId = $referral->parent_referral_id ?? $referral->referral_id;
-
-        // 3. Get all referrals in the chain
-        $referrals = Referral::with([
+        // Follow every generation, but never cross a patient or medical-history case.
+        $referrals = app(\App\Services\TransferReferralService::class)->chain($referral);
+        $referrals->load([
             'patient.geographicalLocation',
             'patient.patientList',
             'patient.files',
             'reason',
             'hospital.referralType',
             'hospitalLetters.followups',
-            'hospitalLetters.printedBy'
-        ])->where('referral_id', $rootReferralId)
-        ->orWhere('parent_referral_id', $rootReferralId)
-        ->get();
+            'hospitalLetters.printedBy',
+            'hospitalLetters.transferredReferral.hospital.referralType',
+            'hospitalLetters.transferredReferral.referralLetters.printedBy',
+        ]);
 
         if ($referrals->isEmpty()) {
             return response()->json([
@@ -1821,11 +1901,26 @@ class ReferralController extends Controller
         $reason    = $referrals->first()->reason;
         $hospitals = $referrals->pluck('hospital')->unique('hospital_id')->values();
         $letters   = $referrals->pluck('hospitalLetters')->flatten(1)->values();
+        foreach ($letters as $letter) {
+            if ($letter->outcome !== 'Transferred') continue;
+            $transfer = app(\App\Services\TransferReferralService::class)->transferredReferral($letter);
+            $document = $transfer?->referralLetters;
+            $letter->setAttribute('transfer_letter', $document ? [
+                'referral_id' => $transfer->getKey(),
+                'referral_letter_id' => $document->getKey(),
+                'is_printed' => (bool) $document->is_printed,
+                'printed_at' => $document->printed_at,
+                'printed_by' => $document->printedBy,
+                'print_count' => (int) $document->print_count,
+                'last_printed_language' => $document->last_printed_language,
+            ] : null);
+        }
         $referralArr = $referrals->map(function ($r) {
             return [
                 'referral_id'        => $r->referral_id,
                 'parent_referral_id' => $r->parent_referral_id,
                 'hospital_id'        => $r->hospital_id,
+                'hospital'           => $r->hospital,
                 'status'             => $r->status,
                 'created_at'         => $r->created_at,
                 'updated_at'         => $r->updated_at,
