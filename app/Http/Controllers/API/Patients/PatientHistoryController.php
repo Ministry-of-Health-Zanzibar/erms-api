@@ -406,7 +406,9 @@ class PatientHistoryController extends Controller
                 $data['history_file'] = 'uploads/historyFiles/'.$fileName;
             }
 
-            // Create patient history
+            // Normal submissions enter the Medical Board queue directly. The
+            // retired initial Director review must not be recreated by the DB default.
+            $data['status'] = PatientHistory::INITIAL_STATUS;
             $history = PatientHistory::create($data);
 
             // Attach diagnoses if provided

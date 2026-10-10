@@ -43,7 +43,7 @@ final class ReportExcelExporter
             $rowNumber++;
             foreach ($report['filters'] as $label => $value) {
                 $sheet->setCellValue("A{$rowNumber}", $label);
-                $sheet->setCellValue("B{$rowNumber}", $value);
+                $this->setTypedCell($sheet, "B{$rowNumber}", $value, 'text');
                 $rowNumber++;
             }
 
@@ -136,7 +136,7 @@ final class ReportExcelExporter
         $rowNumber++;
         foreach ($report['filters'] as $label => $value) {
             $summary->setCellValue("A{$rowNumber}", $label);
-            $summary->setCellValue("B{$rowNumber}", $value);
+            $this->setTypedCell($summary, "B{$rowNumber}", $value, 'text');
             $rowNumber++;
         }
 
@@ -231,7 +231,7 @@ final class ReportExcelExporter
 
     private function safeSheetTitle(string $title, Spreadsheet $spreadsheet): string
     {
-        $title = preg_replace('/[\\\/*?:\[\]]/', '', $title) ?: 'Report section';
+        $title = str_replace(['\\', '/', '*', '?', ':', '[', ']'], '', $title) ?: 'Report section';
         $title = mb_substr($title, 0, 31);
         $candidate = $title;
         $counter = 2;

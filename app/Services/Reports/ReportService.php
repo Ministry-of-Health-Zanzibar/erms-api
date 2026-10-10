@@ -3,6 +3,7 @@
 namespace App\Services\Reports;
 
 use App\Models\User;
+use App\Models\PatientHistory;
 use App\Support\Pagination;
 use App\Support\ReportDataScope;
 use Carbon\Carbon;
@@ -18,6 +19,7 @@ final class ReportService
         private readonly ReportDataScope $scope,
         private readonly DynamicReferralReport $dynamicReferralReport,
         private readonly CaseReport $caseReport,
+        private readonly CaseJourneyReport $caseJourneyReport,
     ) {
     }
 
@@ -41,6 +43,7 @@ final class ReportService
         $result = match ($filters['report_type']) {
             ReportDefinitionRegistry::TOP_DIAGNOSES => $this->topDiagnoses($filters, $user, $paginate),
             ReportDefinitionRegistry::REFERRALS_BY_HOSPITAL => $this->dynamicReferralReport->generate($filters, $user, $paginate),
+            ReportDefinitionRegistry::CASE_JOURNEY => $this->caseJourneyReport->generate($filters, $user, $paginate),
             default => $this->caseReport->generate($filters, $user, $paginate),
         };
 
@@ -56,7 +59,7 @@ final class ReportService
         $result['generated_by'] = $this->userName($user);
         $result['export_formats'] = $definition['exports'];
         $result['confidential'] = in_array($filters['report_type'], [
-            ReportDefinitionRegistry::CASE_WORKFLOW, ReportDefinitionRegistry::BOARDED_OUT_CASES, ReportDefinitionRegistry::PATIENT_SUMMARY,
+            ReportDefinitionRegistry::CASE_WORKFLOW, ReportDefinitionRegistry::BOARDED_OUT_CASES, ReportDefinitionRegistry::PATIENT_SUMMARY, ReportDefinitionRegistry::CASE_JOURNEY,
         ], true) || ($filters['detail_level'] ?? 'breakdown') === 'details';
         $result['filename_base'] = pathinfo(
             $this->titleBuilder->filename($filters['report_type'], $filters, 'xlsx', $labels),
@@ -74,7 +77,7 @@ final class ReportService
         return $this->titleBuilder->filename($filters['report_type'], $filters, $format, $labels);
     }
 
-    public function filterOptions(User $user): array
+    public function filterOptions(User $user, ?string $reportType = null): array
     {
         $hospitalQuery = DB::table('hospitals')
             ->whereNull('hospitals.deleted_at')
@@ -90,6 +93,18 @@ final class ReportService
             'value' => (int) $hospital->hospital_id,
             'label' => $hospital->hospital_name,
         ])->values()->all();
+        $sourceHospitals = $hospitals;
+        if ($reportType === ReportDefinitionRegistry::CASE_JOURNEY && $allowedHospitalIds !== null) {
+            // Case journeys are source-scoped. Offer the actual receiving
+            // hospitals of this user's cases, not only their own workplace.
+            $destinations = DB::table('referrals as r')->join('patients as p', 'p.patient_id', '=', 'r.patient_id')
+                ->join('patient_histories as ph', 'ph.patient_histories_id', '=', 'r.patient_histories_id')
+                ->whereColumn('ph.patient_id', 'r.patient_id')->whereNull('r.deleted_at')->whereNull('p.deleted_at')->whereNull('ph.deleted_at');
+            $this->scope->applyPatientScope($destinations, $user, 'p');
+            $hospitals = DB::table('hospitals')->whereNull('deleted_at')->whereIn('hospital_id', $destinations->select('r.hospital_id'))
+                ->orderBy('hospital_name')->get(['hospital_id', 'hospital_name'])
+                ->map(static fn ($h): array => ['value' => (int) $h->hospital_id, 'label' => $h->hospital_name])->all();
+        }
 
         $locations = DB::table('geographical_locations')
             ->whereNull('deleted_at')
@@ -114,10 +129,11 @@ final class ReportService
 
         return [
             'hospitals' => $hospitals,
-            // The source and destination selectors use the same authorized
-            // hospital catalogue, but remain separate so the request and
-            // applied-filter labels are unambiguous.
-            'source_hospitals' => $hospitals,
+            // Keep source and receiving hospitals separate. Case journeys
+            // use destinations from the hospital user's verified cases.
+            'source_hospitals' => $sourceHospitals,
+            'followup_outcomes' => collect(['Follow-up', 'Finished', 'Transferred', 'Death'])
+                ->map(static fn (string $outcome): array => ['value' => $outcome, 'label' => $outcome])->all(),
             'locations' => $locations,
             'referral_types' => $referralTypes,
             'genders' => [
@@ -128,10 +144,10 @@ final class ReportService
             'referral_statuses' => collect(['Pending', 'Confirmed', 'Death', 'Cancelled', 'Transferred', 'Expired', 'Closed', 'Requested', 'BoardedOut'])
                 ->map(static fn (string $status): array => ['value' => $status, 'label' => $status])
                 ->all(),
-            'patient_history_statuses' => collect(['pending', 'reviewed', 'assigned', 'requested', 'approved', 'confirmed', 'boarded_out', 'rejected', 'under_review'])
+            'patient_history_statuses' => collect([...array_keys(PatientHistory::STATUS_MAP), 'pending', 'under_review'])
                 ->map(static fn (string $status): array => [
                     'value' => $status,
-                    'label' => $status === 'boarded_out' ? 'Boarded Out' : ucfirst(str_replace('_', ' ', $status)),
+                    'label' => PatientHistory::labelForStatus($status),
                 ])
                 ->all(),
             'age_groups' => collect($this->normalizer->ageGroups())
@@ -910,11 +926,25 @@ final class ReportService
             'Reporting period' => $this->titleBuilder->periodLabel($filters),
         ];
 
+        if ($filters['report_type'] === ReportDefinitionRegistry::CASE_JOURNEY) {
+            return $display + [
+                'Date basis' => 'Recorded activity date; complete journey includes earlier context',
+                'Source hospital' => implode(', ', $labels['sourceHospitalNames']) ?: 'All authorized hospitals',
+                'Destination hospital' => implode(', ', $labels['hospitalNames']) ?: 'All',
+                'Approval status' => $filters['patient_history_status'] ? PatientHistory::labelForStatus($filters['patient_history_status']) : 'All',
+                'Recorded follow-up outcome' => $filters['outcome'] ?? 'All',
+                'Patient search' => $filters['patient_search'] ?? 'All',
+                'Referral number' => $filters['referral_search'] ?? 'All',
+                'Archives' => $filters['include_archived'] ? 'Included' : 'Excluded',
+                'View' => $filters['case_id'] ? 'Complete selected case journey' : 'Case summaries and movements in the period',
+            ];
+        }
+
         if (in_array($filters['report_type'], ['case_workflow', 'boarded_out_cases', 'patient_summary'], true)) {
             $display['Date basis'] = 'Case submission date';
             $display['Submitting hospital'] = empty($labels['sourceHospitalNames']) ? 'All authorized hospitals' : implode(', ', $labels['sourceHospitalNames']);
             $display['Case status'] = $filters['patient_history_status']
-                ? ucwords(str_replace('_', ' ', $filters['patient_history_status'])) : 'All';
+                ? PatientHistory::labelForStatus($filters['patient_history_status']) : 'All';
             $display['Archives'] = $filters['include_archived'] ? 'Included' : 'Excluded';
             if ($filters['patient_search']) $display['Patient search'] = $filters['patient_search'];
             return $display;
@@ -971,7 +1001,8 @@ final class ReportService
         }
 
         if ($filters['patient_history_status'] !== null || $filters['report_type'] === ReportDefinitionRegistry::TOP_DIAGNOSES) {
-            $display['Patient history status'] = $filters['patient_history_status'] ?? 'All';
+            $display['Patient history status'] = $filters['patient_history_status'] !== null
+                ? PatientHistory::labelForStatus($filters['patient_history_status']) : 'All';
         }
 
         if ($filters['patient_search'] !== null) {

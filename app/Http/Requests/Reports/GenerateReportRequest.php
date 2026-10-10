@@ -31,6 +31,7 @@ class GenerateReportRequest extends FormRequest
             'referral_type_id',
             'page',
             'per_page',
+            'case_id',
         ];
 
         $normalized = [];
@@ -80,7 +81,7 @@ class GenerateReportRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'report_type' => ['required', 'string', Rule::in(['top_diagnoses', 'referrals_by_hospital', 'case_workflow', 'boarded_out_cases', 'patient_summary'])],
+            'report_type' => ['required', 'string', Rule::in(['top_diagnoses', 'referrals_by_hospital', 'case_workflow', 'boarded_out_cases', 'patient_summary', 'case_journey'])],
             'start_date' => ['required', 'date', 'before_or_equal:end_date'],
             'end_date' => ['required', 'date', 'before_or_equal:today'],
             'top' => ['nullable', 'integer', Rule::in([5, 10, 20, 50, 100])],
@@ -107,6 +108,9 @@ class GenerateReportRequest extends FormRequest
             'patient_history_status' => ['nullable', 'string', Rule::in(['pending', 'reviewed', 'assigned', 'requested', 'approved', 'confirmed', 'boarded_out', 'rejected', 'under_review'])],
             'include_archived' => ['sometimes', 'boolean'],
             'patient_search' => ['nullable', 'string', 'max:120'],
+            'referral_search' => ['nullable', 'string', 'max:120'],
+            'outcome' => ['nullable', 'string', Rule::in(['Follow-up', 'Finished', 'Transferred', 'Death'])],
+            'case_id' => ['nullable', 'integer', 'min:1'],
             'page' => ['nullable', 'integer', 'min:1'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
         ];

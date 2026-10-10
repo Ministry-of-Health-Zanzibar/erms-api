@@ -615,366 +615,25 @@ class ReportController extends Controller
     //     ], 200);
     // }
 
-    public function searchReferralReport(Request $request)
-{
-    // Permission check
-    $user = auth()->user();
-
-    if (! $user->can('View Report')) {
-        return response([
-            'message' => 'Forbidden',
-            'statusCode' => 403,
-        ], 403);
+    public function searchReferralReport(Request $request, \App\Services\Reports\SearchReferralReport $report)
+    {
+        $user = auth()->user();
+        if (! \App\Support\SuperAdminAccess::allowed($user, 'View Report')) {
+            return response(['message' => 'Forbidden', 'statusCode' => 403], 403);
+        }
+        $filters = $request->validate([
+            'patient_name' => ['nullable', 'string', 'max:120'],
+            'hospital_name' => ['nullable', 'string', 'max:160'],
+            'from_hospital_name' => ['nullable', 'string', 'max:160'],
+            'from_hospital_address' => ['nullable', 'string', 'max:255'],
+            'to_hospital_name' => ['nullable', 'string', 'max:160'],
+            'to_hospital_address' => ['nullable', 'string', 'max:255'],
+            'referral_reason_name' => ['nullable', 'string', 'max:255'],
+            'start_date' => ['nullable', 'date'],
+            'end_date' => ['nullable', 'date', \Illuminate\Validation\Rule::when($request->filled('start_date'), 'after_or_equal:start_date')],
+        ]);
+        return response(['data' => $report->generate($filters, $user), 'statusCode' => 200], 200);
     }
-
-    $query = DB::table('referrals as r')
-
-        /*
-        |--------------------------------------------------------------------------
-        | PATIENT
-        |--------------------------------------------------------------------------
-        */
-        ->join(
-            'patients as p',
-            'p.patient_id',
-            '=',
-            'r.patient_id'
-        )
-
-        /*
-        |--------------------------------------------------------------------------
-        | FROM HOSPITAL
-        |--------------------------------------------------------------------------
-        |
-        | The FROM hospital is obtained from the user who created
-        | the referral:
-        |
-        | referrals.created_by
-        |        ↓
-        | hospital_user.user_id
-        |        ↓
-        | hospital_user.hospital_id
-        |        ↓
-        | hospitals.hospital_id
-        |
-        | Only hospitals with referral_type_id = 3 are FROM hospitals.
-        |
-        | parent_referral_id is NOT used.
-        |
-        */
-        ->leftJoin(
-            'hospital_user as from_hospital_user',
-            'from_hospital_user.user_id',
-            '=',
-            'r.created_by'
-        )
-
-        ->leftJoin(
-            'hospitals as from_hospital',
-            function ($join) {
-                $join->on(
-                    'from_hospital.hospital_id',
-                    '=',
-                    'from_hospital_user.hospital_id'
-                )
-                ->where(
-                    'from_hospital.referral_type_id',
-                    '=',
-                    3
-                );
-            }
-        )
-
-        /*
-        |--------------------------------------------------------------------------
-        | TO HOSPITAL
-        |--------------------------------------------------------------------------
-        |
-        | The TO hospital comes from referrals.hospital_id.
-        |
-        | Only hospitals with referral_type_id 1 or 2 are TO hospitals.
-        |
-        */
-        ->leftJoin(
-            'hospitals as to_hospital',
-            function ($join) {
-                $join->on(
-                    'to_hospital.hospital_id',
-                    '=',
-                    'r.hospital_id'
-                )
-                ->whereIn(
-                    'to_hospital.referral_type_id',
-                    [1, 2]
-                );
-            }
-        )
-
-        /*
-        |--------------------------------------------------------------------------
-        | REASON
-        |--------------------------------------------------------------------------
-        */
-        ->join(
-            'reasons',
-            'reasons.reason_id',
-            '=',
-            'r.reason_id'
-        )
-
-        /*
-        |--------------------------------------------------------------------------
-        | INSURANCE
-        |--------------------------------------------------------------------------
-        */
-        ->leftJoin(
-            'insurances',
-            'insurances.patient_id',
-            '=',
-            'p.patient_id'
-        )
-
-        /*
-        |--------------------------------------------------------------------------
-        | REFERRAL LETTER
-        |--------------------------------------------------------------------------
-        */
-        ->leftJoin(
-            'referral_letters as rl',
-            'rl.referral_id',
-            '=',
-            'r.referral_id'
-        )
-
-        /*
-        |--------------------------------------------------------------------------
-        | SELECT
-        |--------------------------------------------------------------------------
-        */
-        ->select(
-            'r.referral_id',
-            'r.parent_referral_id',
-            'r.referral_number',
-            'r.created_at',
-            'r.status as referral_status',
-
-            'p.patient_id',
-            'p.name as patient_name',
-
-            /*
-            |--------------------------------------------------------------------------
-            | FROM HOSPITAL
-            |--------------------------------------------------------------------------
-            |
-            | These are aliases generated by the query.
-            | They are NOT database columns.
-            |
-            */
-            'from_hospital.hospital_id as from_hospital_id',
-            'from_hospital.hospital_name as from_hospital_name',
-            'from_hospital.hospital_address as from_hospital_address',
-
-            /*
-            |--------------------------------------------------------------------------
-            | TO HOSPITAL
-            |--------------------------------------------------------------------------
-            */
-            'to_hospital.hospital_id as to_hospital_id',
-            'to_hospital.hospital_name as to_hospital_name',
-            'to_hospital.hospital_address as to_hospital_address',
-
-            'reasons.referral_reason_name',
-
-            'insurances.insurance_provider_name',
-
-            'rl.start_date',
-            'rl.end_date'
-        )
-
-        /*
-        |--------------------------------------------------------------------------
-        | BOARD DIAGNOSES
-        |--------------------------------------------------------------------------
-        */
-        ->selectRaw("
-            (
-                SELECT STRING_AGG(
-                    DISTINCT d.diagnosis_name,
-                    ', '
-                )
-                FROM patient_histories ph
-                JOIN history_diagnosis hd
-                    ON hd.patient_histories_id = ph.patient_histories_id
-                JOIN diagnoses d
-                    ON d.diagnosis_id = hd.diagnosis_id
-                WHERE ph.patient_id = p.patient_id
-                    AND hd.added_by = 'medical_board'
-            ) AS board_diagnoses
-        ");
-
-    /*
-    |--------------------------------------------------------------------------
-    | ONLY TO-HOSPITAL REFERRALS
-    |--------------------------------------------------------------------------
-    |
-    | The main referral must point to a hospital whose type is 1 or 2.
-    |
-    */
-    $query->whereIn(
-        'to_hospital.referral_type_id',
-        [1, 2]
-    );
-
-    /*
-    |--------------------------------------------------------------------------
-    | FILTERS
-    |--------------------------------------------------------------------------
-    */
-
-    if ($request->filled('patient_name')) {
-        $query->where(
-            'p.name',
-            'ILIKE',
-            '%' . $request->patient_name . '%'
-        );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | FROM HOSPITAL NAME
-    |--------------------------------------------------------------------------
-    */
-    if ($request->filled('from_hospital_name')) {
-        $query->where(
-            'from_hospital.hospital_name',
-            'ILIKE',
-            '%' . $request->from_hospital_name . '%'
-        );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | FROM HOSPITAL ADDRESS
-    |--------------------------------------------------------------------------
-    */
-    if ($request->filled('from_hospital_address')) {
-        $query->where(
-            'from_hospital.hospital_address',
-            'ILIKE',
-            '%' . $request->from_hospital_address . '%'
-        );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | TO HOSPITAL NAME
-    |--------------------------------------------------------------------------
-    */
-    if ($request->filled('to_hospital_name')) {
-        $query->where(
-            'to_hospital.hospital_name',
-            'ILIKE',
-            '%' . $request->to_hospital_name . '%'
-        );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | TO HOSPITAL ADDRESS
-    |--------------------------------------------------------------------------
-    */
-    if ($request->filled('to_hospital_address')) {
-        $query->where(
-            'to_hospital.hospital_address',
-            'ILIKE',
-            '%' . $request->to_hospital_address . '%'
-        );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | REFERRAL REASON
-    |--------------------------------------------------------------------------
-    */
-    if ($request->filled('referral_reason_name')) {
-        $query->where(
-            'reasons.referral_reason_name',
-            'ILIKE',
-            '%' . $request->referral_reason_name . '%'
-        );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | DATE RANGE
-    |--------------------------------------------------------------------------
-    */
-    if (
-        $request->filled('start_date') &&
-        $request->filled('end_date')
-    ) {
-        $query->whereBetween(
-            'rl.start_date',
-            [
-                $request->start_date,
-                $request->end_date,
-            ]
-        );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | GET RESULTS
-    |--------------------------------------------------------------------------
-    */
-    $results = $query
-        ->orderByDesc('r.created_at')
-        ->get();
-
-    /*
-    |--------------------------------------------------------------------------
-    | BOARD DIAGNOSES DETAILS
-    |--------------------------------------------------------------------------
-    */
-    foreach ($results as $result) {
-
-        $result->board_diagnoses = DB::table(
-            'patient_histories as ph'
-        )
-            ->join(
-                'history_diagnosis as hd',
-                'hd.patient_histories_id',
-                '=',
-                'ph.patient_histories_id'
-            )
-            ->join(
-                'diagnoses as d',
-                'd.diagnosis_id',
-                '=',
-                'hd.diagnosis_id'
-            )
-            ->where(
-                'ph.patient_id',
-                $result->patient_id
-            )
-            ->where(
-                'hd.added_by',
-                'medical_board'
-            )
-            ->select(
-                'd.diagnosis_id',
-                'd.diagnosis_code',
-                'd.diagnosis_name'
-            )
-            ->distinct()
-            ->get();
-    }
-
-    return response([
-        'data' => $results,
-        'statusCode' => 200,
-    ], 200);
-}
 
     public function rangeReport(Request $request)
     {
@@ -1269,7 +928,7 @@ class ReportController extends Controller
             'include_archived' => ['sometimes', 'boolean'],
             'refresh' => ['sometimes', 'boolean'],
         ]);
-        $cacheKey = 'dashboard.case-status-tracking.v2.'.$user->id.'.'.hash('sha256', json_encode(array_diff_key($filters, ['refresh' => true])));
+        $cacheKey = 'dashboard.case-status-tracking.v3.'.$user->id.'.'.hash('sha256', json_encode(array_diff_key($filters, ['refresh' => true])));
 
         try {
             if ($request->boolean('refresh')) {
@@ -1309,7 +968,7 @@ class ReportController extends Controller
         try {
 
             $report = Cache::remember(
-                'dashboard.workflow-status-report.v5',
+                'dashboard.workflow-status-report.v6',
                 now()->addSeconds(15),
                 function (): array {
                     // patient_histories.status is now the canonical case
@@ -1367,23 +1026,6 @@ class ReportController extends Controller
             ->groupBy('status')
             ->pluck('total', 'status');
 
-        $patientStatusTracking = collect(PatientHistory::STATUS_MAP)
-            ->map(function (array $tracking, string $status) use ($medicalBoardCounts) {
-                return [
-                    'status' => $status,
-                    'stage' => $tracking['stage'],
-                    'label' => $tracking['label'],
-                    'current_holder' => $tracking['current_holder'],
-                    'description' => $tracking['description'],
-                    'progress_percentage' => (int) round(($tracking['stage'] / 6) * 100),
-                    'count' => (int) ($medicalBoardCounts[$status] ?? 0),
-                ];
-            })
-            ->values();
-
-        return [
-            'total' => (int) $medicalBoardCounts->sum(),
-            'statuses' => $patientStatusTracking,
-        ];
+        return CaseReport::summarizeStatusCounts($medicalBoardCounts->all());
     }
 }

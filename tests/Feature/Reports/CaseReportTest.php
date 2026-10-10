@@ -103,7 +103,10 @@ class CaseReportTest extends TestCase
         $this->assertSame(1, $summary['confirmed']);
         $this->assertSame(1, $summary['boarded_out']);
         $this->assertSame(4, $cases->summary(['include_archived' => true], $this->user())['total']);
-        $this->assertSame($summary['total'], array_sum(array_column($summary['statuses'], 'count')));
+        $this->assertSame(2, $summary['tracked_total']);
+        $this->assertSame(1, $summary['untracked_total']);
+        $this->assertSame($summary['total'], array_sum(array_column($summary['statuses'], 'count')) + $summary['untracked_total']);
+        $this->assertNotContains('pending', array_column($summary['statuses'], 'status'));
     }
 
     public function test_case_report_and_dashboard_share_filters_and_export_all_pages(): void
@@ -152,18 +155,22 @@ class CaseReportTest extends TestCase
         $this->assertSame(3, app(CaseReport::class)->summary([], $this->user())['total']);
     }
 
-    public function test_new_case_does_not_replace_an_old_referral_and_progress_contract_is_preserved(): void
+    public function test_new_case_does_not_replace_an_old_referral_and_legacy_submissions_are_not_advanced(): void
     {
         $linker = app(ReferralCaseLinker::class);
         $this->assertSame(1, $linker->historyId(DB::table('referrals')->where('referral_id', 1)->first()));
         $history = new PatientHistory(['status' => 'pending']);
-        $this->assertSame('17%', $history->progress_percentage);
-        $this->assertSame(1, $history->status_tracking['stage']);
+        $this->assertSame('0%', $history->progress_percentage);
+        $this->assertSame('Legacy submission', $history->status_tracking['label']);
+        $this->assertTrue($history->status_tracking['is_legacy']);
         $summary = app(CaseReport::class)->summary(['start_date' => '2026-10-01'], $this->user());
         $this->assertSame(1, $summary['total']);
-        $pending = collect($summary['statuses'])->firstWhere('status', 'pending');
-        $this->assertSame(100.0, $pending['case_percentage']);
-        $this->assertSame(17, $pending['progress_percentage']);
+        $this->assertSame(0, $summary['tracked_total']);
+        $this->assertSame([['status' => 'pending', 'label' => 'Legacy submission', 'count' => 1]], $summary['untracked_statuses']);
+        $this->assertSame('pending', PatientHistory::findOrFail(2)->status);
+        $filters = (new ReportFilterNormalizer)->normalize(['report_type' => 'case_workflow',
+            'start_date' => '2026-10-01', 'end_date' => '2026-10-09', 'patient_history_status' => 'pending']);
+        $this->assertSame('Legacy submission', app(CaseReport::class)->generate($filters, $this->user(), false)['rows'][0]['status_label']);
     }
 
     public function test_legacy_links_use_evidence_and_leave_ambiguous_records_unassigned(): void
@@ -240,12 +247,17 @@ class CaseReportTest extends TestCase
         $this->actingAs($user, 'sanctum');
         $url = '/api/reports/caseStatusTracking?start_date=2026-10-01';
         $this->getJson($url)->assertOk()->assertJsonPath('data.medical_history.total', 1)
-            ->assertJsonPath('data.medical_history.statuses.0.progress_percentage', 17)
-            ->assertJsonPath('data.medical_history.statuses.0.case_percentage', 100);
+            ->assertJsonPath('data.medical_history.statuses.0.label', 'Awaiting Medical Board')
+            ->assertJsonPath('data.medical_history.statuses.0.progress_percentage', 20)
+            ->assertJsonPath('data.medical_history.statuses.0.case_percentage', 0)
+            ->assertJsonPath('data.medical_history.untracked_total', 1);
         DB::table('patient_histories')->insert(['patient_histories_id' => 5, 'patient_id' => 2,
             'status' => 'reviewed', 'created_at' => '2026-10-09', 'updated_at' => '2026-10-09']);
         $this->getJson($url)->assertOk()->assertJsonPath('data.medical_history.total', 1);
-        $this->getJson($url.'&refresh=1')->assertOk()->assertJsonPath('data.medical_history.total', 2);
+        $this->getJson($url.'&refresh=1')->assertOk()->assertJsonPath('data.medical_history.total', 2)
+            ->assertJsonPath('data.medical_history.tracked_total', 1)
+            ->assertJsonPath('data.medical_history.untracked_total', 1)
+            ->assertJsonPath('data.medical_history.statuses.0.case_percentage', 100);
         $this->getJson('/api/reports/caseStatusTracking?start_date=2026-10-09&end_date=2026-01-01')->assertUnprocessable();
     }
 

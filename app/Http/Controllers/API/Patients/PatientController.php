@@ -627,7 +627,7 @@ class PatientController extends Controller
                 'management_done' => $request->management_done,
                 // Hospital submissions go straight to the Medical Board queue.
                 // That queue only includes patients whose latest history is reviewed.
-                'status' => 'reviewed',
+                'status' => \App\Models\PatientHistory::INITIAL_STATUS,
             ]);
 
             if ($request->filled('diagnosis_ids')) {

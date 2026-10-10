@@ -17,6 +17,9 @@ class PatientHistory extends Model
     protected $primaryKey = 'patient_histories_id';
     public $incrementing = true;
     protected $keyType = 'integer';
+    public const INITIAL_STATUS = 'reviewed';
+    public const WORKFLOW_STAGE_COUNT = 5;
+    protected $attributes = ['status' => self::INITIAL_STATUS];
 
     protected $fillable = [
         'patient_id',
@@ -40,50 +43,44 @@ class PatientHistory extends Model
     ];
 
     public const STATUS_MAP = [
-        'pending' => [
-            'stage' => 1,
-            'label' => 'Submitted by Hospital',
-            'current_holder' => 'Director',
-            'description' => 'Medical history submitted and awaiting review',
-        ],
         'reviewed' => [
-            'stage' => 2,
-            'label' => 'Reviewed by Director',
+            'stage' => 1,
+            'label' => 'Awaiting Medical Board',
             'current_holder' => 'Medical Board',
-            'description' => 'Reviewed and forwarded to medical board',
+            'description' => 'Submitted directly to the Medical Board and awaiting a meeting assignment',
         ],
         'assigned' => [
-            'stage' => 3,
-            'label' => 'Assigned to Medical Board Meeting',
+            'stage' => 2,
+            'label' => 'Assigned to Board Meeting',
             'current_holder' => 'Medical Board',
-            'description' => 'Patient officially assigned to a medical board Meeting',
+            'description' => 'Assigned to a Medical Board meeting and awaiting the board decision',
         ],
         'requested' => [
-            'stage' => 4,
-            'label' => 'Medical Board Meeting Requested A Referral',
-            'current_holder' => 'Director',
-            'description' => 'Medical board requested additional information for the referral',
+            'stage' => 3,
+            'label' => 'Awaiting DCS Approval',
+            'current_holder' => 'DCS',
+            'description' => 'Medical Board decision recorded and awaiting DCS approval',
         ],
         'approved' => [
-            'stage' => 5,
-            'label' => 'Approved by Director',
+            'stage' => 4,
+            'label' => 'Approved by DCS',
             'current_holder' => 'Director General (DG)',
-            'description' => 'Approved and sent to DG for confirmation',
+            'description' => 'Approved by DCS and awaiting DG confirmation',
         ],
         'confirmed' => [
-            'stage' => 6,
-            'label' => 'Confirmed by DG',
+            'stage' => 5,
+            'label' => 'Confirmed',
             'current_holder' => 'Completed',
             'description' => 'Final approval completed',
         ],
         'rejected' => [
             'stage' => 0,
-            'label' => 'Rejected by DG',
+            'label' => 'Rejected',
             'current_holder' => 'Closed',
             'description' => 'Medical history rejected',
         ],
         'boarded_out' => [
-            'stage' => 6,
+            'stage' => 5,
             'label' => 'Boarded Out',
             'current_holder' => 'Completed',
             'description' => 'Patient completed the process with a boarded-out decision',
@@ -92,19 +89,39 @@ class PatientHistory extends Model
 
     public function getStatusTrackingAttribute()
     {
-        return self::STATUS_MAP[$this->status] ?? null;
+        return self::trackingForStatus($this->status);
     }
 
     public function getProgressPercentageAttribute()
     {
-        if (!isset(self::STATUS_MAP[$this->status])) {
-            return '0%';
+        return self::progressForStatus($this->status) . '%';
+    }
+
+    public static function trackingForStatus(?string $status): ?array
+    {
+        // Preserve historical records without claiming an initial review took
+        // place or silently making them eligible for the Medical Board queue.
+        if ($status === 'pending') {
+            return [
+                'stage' => 0,
+                'label' => 'Legacy submission',
+                'current_holder' => 'Not in current workflow',
+                'description' => 'Older submission awaiting a verified workflow update. No automatic approval has been applied.',
+                'is_legacy' => true,
+            ];
         }
 
-        $maxStage = 6;
-        $stage = self::STATUS_MAP[$this->status]['stage'];
+        return self::STATUS_MAP[$status] ?? null;
+    }
 
-        return (int) round(($stage / $maxStage) * 100) . '%';
+    public static function progressForStatus(?string $status): int
+    {
+        return (int) round(((self::trackingForStatus($status)['stage'] ?? 0) / self::WORKFLOW_STAGE_COUNT) * 100);
+    }
+
+    public static function labelForStatus(?string $status): string
+    {
+        return $status === 'under_review' ? 'Under review' : (self::trackingForStatus($status)['label'] ?? $status ?? 'Unknown status');
     }
 
     /**

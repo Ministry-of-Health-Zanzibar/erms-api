@@ -12,6 +12,7 @@ final class ReportDefinitionRegistry
     public const CASE_WORKFLOW = 'case_workflow';
     public const BOARDED_OUT_CASES = 'boarded_out_cases';
     public const PATIENT_SUMMARY = 'patient_summary';
+    public const CASE_JOURNEY = 'case_journey';
 
     /**
      * The public report catalogue. Keep database names out of this structure;
@@ -98,6 +99,14 @@ final class ReportDefinitionRegistry
                 'exports' => ['xlsx', 'pdf', 'docx'],
             ];
         }
+        $reports[self::CASE_JOURNEY] = [
+            'key' => self::CASE_JOURNEY, 'name' => 'Case Journey and Outcomes',
+            'description' => 'Case movements, hospital transfers and recorded follow-up outcomes, separate from approval tracking.',
+            'metric' => 'One medical history is one case. Dates select recorded activities, not only case submissions. Outcomes belong to individual hospital referrals.',
+            'filters' => ['date_range', 'source_hospital', 'referral_hospital', 'patient_history_status', 'patient_search', 'referral_search', 'outcome', 'include_archived'],
+            'detail_levels' => [['value' => 'summary', 'label' => 'Case summary'], ['value' => 'details', 'label' => 'Complete case journey']],
+            'exports' => ['xlsx', 'pdf', 'docx'],
+        ];
         return $reports;
     }
 

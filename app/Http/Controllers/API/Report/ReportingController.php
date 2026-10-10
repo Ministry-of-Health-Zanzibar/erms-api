@@ -26,9 +26,10 @@ final class ReportingController extends Controller
     public function filters(Request $request, ReportService $reports)
     {
         $this->authorizeReports($request);
+        $input = $request->validate(['report_type' => ['nullable', 'string', \Illuminate\Validation\Rule::in(array_keys(app(\App\Services\Reports\ReportDefinitionRegistry::class)->all()))]]);
 
         return response()->json([
-            'data' => $reports->filterOptions($request->user()),
+            'data' => $reports->filterOptions($request->user(), $input['report_type'] ?? null),
             'statusCode' => 200,
         ]);
     }

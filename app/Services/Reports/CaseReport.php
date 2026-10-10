@@ -64,21 +64,37 @@ final class CaseReport
     {
         $counts = $this->query($filters, $user)->selectRaw('ph.status, COUNT(*) as total')
             ->groupBy('ph.status')->pluck('total', 'status');
+        return self::summarizeStatusCounts($counts->all());
+    }
+
+    public static function summarizeStatusCounts(array $counts): array
+    {
+        $counts = collect($counts)->map(fn ($count): int => (int) $count);
         $total = (int) $counts->sum();
-        $statuses = collect(PatientHistory::STATUS_MAP)->map(function (array $tracking, string $status) use ($counts, $total): array {
+        $trackedTotal = (int) $counts->only(array_keys(PatientHistory::STATUS_MAP))->sum();
+        $statuses = collect(PatientHistory::STATUS_MAP)->map(function (array $tracking, string $status) use ($counts, $total, $trackedTotal): array {
             $count = (int) ($counts[$status] ?? 0);
             return [
                 'status' => $status,
                 ...$tracking,
-                // Existing individual workflow panels retain their stage progress.
-                'progress_percentage' => (int) round(($tracking['stage'] / 6) * 100),
-                'case_percentage' => $total > 0 ? round($count / $total * 100, 2) : 0,
+                'progress_percentage' => PatientHistory::progressForStatus($status),
+                'case_percentage' => $trackedTotal > 0 ? round($count / $trackedTotal * 100, 2) : 0,
+                'total_case_percentage' => $total > 0 ? round($count / $total * 100, 2) : 0,
                 'count' => $count,
             ];
         })->values()->all();
+        $untracked = $counts->except(array_keys(PatientHistory::STATUS_MAP))->filter(fn ($count) => $count > 0)
+            ->map(fn ($count, $status): array => [
+                'status' => $status,
+                'label' => PatientHistory::labelForStatus($status),
+                'count' => $count,
+            ])->values()->all();
 
         return [
             'total' => $total,
+            'tracked_total' => $trackedTotal,
+            'untracked_total' => $total - $trackedTotal,
+            'untracked_statuses' => $untracked,
             'under_review' => (int) $counts->only(self::OPEN_STATUSES)->sum(),
             'confirmed' => (int) ($counts['confirmed'] ?? 0),
             'boarded_out' => (int) ($counts['boarded_out'] ?? 0),
@@ -157,7 +173,7 @@ final class CaseReport
         }
         $rows = $rows->map(function ($row): array {
             $row = (array) $row;
-            $row['status_label'] = PatientHistory::STATUS_MAP[$row['status']]['label'] ?? $row['status'];
+            $row['status_label'] = PatientHistory::labelForStatus($row['status']);
             $row['archive'] = $row['case_archived_at'] || $row['patient_archived_at'] ? 'Archived' : 'Active';
             return $row;
         })->all();
@@ -169,6 +185,7 @@ final class CaseReport
             'The source hospital follows the patient creator\'s hospital assignment in the existing records.',
             'Referred hospitals list the distinct destinations linked to this exact case.',
             'Exports include every matching row, not only the preview page.',
+            'Legacy submissions remain in totals and reports but are not counted as a current workflow stage.',
         ];
 
         return [

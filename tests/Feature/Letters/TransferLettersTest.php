@@ -264,6 +264,23 @@ class TransferLettersTest extends TestCase
         $this->assertDatabaseCount('referral_letters', 1);
     }
 
+    public function test_additive_journey_logging_preserves_the_transfer_workflow_and_records_the_actor(): void
+    {
+        (require database_path('migrations/2026_10_10_120000_create_case_journey_events_table.php'))->up();
+        $letter = $this->transfer();
+        $event = DB::table('case_journey_events')->where('event_kind','Follow-up recorded')->first();
+        $this->assertNotNull($event); $this->assertSame(1,(int)$event->actor_id);
+        $this->assertSame(1,(int)$event->patient_histories_id); $this->assertSame('Transferred',$event->outcome);
+        $this->assertSame('Confirmed',Referral::find(1)->status);
+        $this->assertSame('confirmed',DB::table('patient_histories')->value('status'));
+        $this->assertNotNull($letter->transferred_referral_id);
+        $letter->content_summary = 'Updated transfer notes'; $letter->save();
+        $change = DB::table('case_journey_events')->where('event_kind','Follow-up letter updated')->orderByDesc('id')->first();
+        $this->assertNotNull($change);
+        $this->assertSame('Transfer for further treatment',json_decode($change->snapshot,true)['before']['content_summary']);
+        $this->assertSame('Updated transfer notes',json_decode($change->snapshot,true)['after']['content_summary']);
+    }
+
     public function test_transfer_rolls_back_when_followup_record_cannot_be_saved(): void
     {
         FollowUp::creating(fn () => throw new \RuntimeException('Simulated follow-up failure'));

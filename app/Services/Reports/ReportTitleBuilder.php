@@ -8,6 +8,9 @@ final class ReportTitleBuilder
 {
     public function title(string $reportType, array $filters, array $labels = []): string
     {
+        if ($reportType === ReportDefinitionRegistry::CASE_JOURNEY) {
+            return 'CASE JOURNEY AND OUTCOMES REPORT';
+        }
         if (in_array($reportType, ['case_workflow', 'boarded_out_cases', 'patient_summary'], true)) {
             return strtoupper(str_replace('_', ' ', $reportType)).' REPORT';
         }
@@ -64,6 +67,9 @@ final class ReportTitleBuilder
 
     public function filename(string $reportType, array $filters, string $format, array $labels = []): string
     {
+        if ($reportType === ReportDefinitionRegistry::CASE_JOURNEY) {
+            return 'case_journey_'.$filters['start_date'].'_to_'.$filters['end_date'].'.'.$format;
+        }
         if (in_array($reportType, ['case_workflow', 'boarded_out_cases', 'patient_summary'], true)) {
             return $reportType.'_'.$filters['start_date'].'_to_'.$filters['end_date'].'.'.$format;
         }

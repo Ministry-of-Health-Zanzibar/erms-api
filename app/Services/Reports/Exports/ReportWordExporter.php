@@ -103,7 +103,14 @@ final class ReportWordExporter
 
         $path = tempnam(sys_get_temp_dir(), 'report-docx-');
         $writer = IOFactory::createWriter($phpWord, 'Word2007');
-        $writer->save($path);
+        $previousEscaping = \PhpOffice\PhpWord\Settings::isOutputEscapingEnabled();
+        try {
+            // Clinical notes and hospital names are plain text, not raw XML.
+            \PhpOffice\PhpWord\Settings::setOutputEscapingEnabled(true);
+            $writer->save($path);
+        } finally {
+            \PhpOffice\PhpWord\Settings::setOutputEscapingEnabled($previousEscaping);
+        }
 
         return response()->download(
             $path,

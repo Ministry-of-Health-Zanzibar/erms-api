@@ -19,9 +19,54 @@ The dashboard shows all active cases without a filter card. Date, hospital,
 status and archive filters remain on the report page. A dashboard card or
 chart stage opens the matching active-case report.
 
-Dashboard percentages show the share of cases. Individual `status_tracking`
+Dashboard percentages show the share of tracked cases. Individual `status_tracking`
 and `progress_percentage` still describe the case's workflow stage. The
 Workflow overview / Status Tracking panels and their actions are retained.
+
+## Current five-stage workflow
+
+| Stored status | Display label | Stage | Progress | Current holder |
+| --- | --- | --- | --- | --- |
+| `reviewed` | Awaiting Medical Board | 1 | 20% | Medical Board |
+| `assigned` | Assigned to Board Meeting | 2 | 40% | Medical Board |
+| `requested` | Awaiting DCS Approval | 3 | 60% | DCS |
+| `approved` | Approved by DCS | 4 | 80% | Director General (DG) |
+| `confirmed` | Confirmed | 5 | 100% | Completed |
+
+Stage 4 means DCS approval is complete and DG confirmation is still awaited.
+Rejected and boarded-out cases remain separate terminal outcomes. Approval
+actions, stored codes and role checks are unchanged. Both normal registration
+and Add medical history start at `reviewed`; the retired initial Director
+review is not recreated by the old database default. The existing special
+auto-approved data-entry registration flow is retained.
+
+Existing `pending` histories are **not** automatically advanced or approved.
+They appear as Legacy submission in case reports and a separate dashboard
+notice, outside the current workflow stages. Total cases and the under-review
+card still include them. The doughnut and its percentages use `tracked_total`;
+`total = tracked_total + untracked_total`. Unknown statuses are also reported
+outside the chart, so no cases disappear from the total. Historical pending
+records need a separately authorised review before their stored status changes.
+
+This five-stage display update adds no migration or historical data rewrite.
+Deploy the API and UI together; dashboard cache keys have been versioned to
+avoid serving the previous six-stage metadata.
+
+On the Referrals list, Status shows the API's referral-group status,
+not the medical history's approval status. Individual hospital referral
+statuses remain available in the referral details. A case-link warning is shown
+separately in Record check and does not change any saved status. A linked case
+with an unrecognised workflow label is shown as Case status needs review.
+Recommendation-only histories retain their case workflow label because no
+hospital referral exists for those rows yet.
+
+Follow-up outcomes remain separate in the follow-up page's Outcome column.
+The existing create flow is unchanged: Follow-up records an Ongoing entry;
+Finished and Death close the hospital referral; Transferred creates a linked
+destination referral without changing the original approval. A referral group
+can contain several hospital statuses, so its existing aggregate status is not
+necessarily the outcome of one particular follow-up entry. Case-link checks
+remain enforced for decisions and transfers; moving a warning is not a bypass.
 
 Reports added to the report selector:
 
