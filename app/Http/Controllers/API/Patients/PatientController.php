@@ -1825,7 +1825,7 @@ class PatientController extends Controller
                 $genderMap = ['M' => 'Male', 'F' => 'Female'];
                 $genderRaw = strtoupper($imisData['gender'] ?? '');
 
-                // Translate openIMIS format directly to your local ERIS data attributes layout
+                // Translate openIMIS format directly to your local ERMS data attributes layout
                 $mappedPatient = [
                     'patient_id' => null, // Unregistered locally
                     'name' => $imisData['insureeName'] ?? trim(($imisData['firstName'] ?? '').' '.($imisData['lastName'] ?? '')),
@@ -1852,7 +1852,7 @@ class PatientController extends Controller
                 report($e);
 
                 return response()->json([
-                    'message' => 'Patient not found in ERIS or Matibabu',
+                    'message' => 'Patient not found in ERMS or Matibabu',
                     'success' => false,
                     'statusCode' => 404,
                 ], 404);

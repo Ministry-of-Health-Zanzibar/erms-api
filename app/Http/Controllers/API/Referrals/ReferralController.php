@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\Auth;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Validator;
 use App\Support\Pagination;
+use App\Support\HospitalDoctorAccess;
 
 
 class ReferralController extends Controller
@@ -74,6 +75,8 @@ class ReferralController extends Controller
     public function index(Request $request)
     {
         $user = auth()->user();
+        $doctorAccess = app(HospitalDoctorAccess::class);
+        $doctorHospitalIds = $doctorAccess->hospitalIds($user);
 
         $dataEntryEmails = [
             'medicalboard@mohz.go.tz',
@@ -82,7 +85,7 @@ class ReferralController extends Controller
             'dguser@mohz.go.tz'
         ];
 
-        if (!$user->can('View Referral')) {
+        if (!$doctorAccess->canViewReferrals($user)) {
             return response([
                 'message' => 'Forbidden',
                 'statusCode' => 403
@@ -90,7 +93,7 @@ class ReferralController extends Controller
         }
 
         $isDataEntryUser = in_array($user->email, $dataEntryEmails);
-        $canSeeAllReferralSources = $user->hasAnyRole([
+        $canSeeAllReferralSources = $doctorHospitalIds !== null || $user->hasAnyRole([
             'ROLE DIRECTOR GENERAL',
             'ROLE DG',
             'ROLE ADMIN',
@@ -143,6 +146,12 @@ class ReferralController extends Controller
         })->when($request->filled('date_to'), function ($query) use ($request): void {
             $query->whereDate('created_at', '<=', $request->input('date_to'));
         });
+
+        if ($doctorHospitalIds !== null) {
+            // Hospital users can see assigned-hospital cases and any cases
+            // they created themselves, including cases without a hospital.
+            $doctorAccess->applyReferralScope($query, $user);
+        }
 
         if ($request->boolean('has_followup')) {
             $query->whereHas('hospitalLetters.followups');
@@ -207,6 +216,14 @@ class ReferralController extends Controller
             $boardedOutQuery->whereRaw('1 = 0');
         }
 
+        // Hospital users review existing hospital follow-ups only. Virtual
+        // recommendations and boarded-out history rows are not hospital
+        // follow-up records and must not appear in this view.
+        if ($doctorHospitalIds !== null) {
+            $virtualQuery->whereRaw('1 = 0');
+            $boardedOutQuery->whereRaw('1 = 0');
+        }
+
         $virtualCandidates = $virtualQuery
             ->selectRaw("'virtual' as source")
             ->selectRaw('CAST(patient_histories_id AS VARCHAR) as source_key')
@@ -246,6 +263,9 @@ class ReferralController extends Controller
                 },
             ])
             ->whereIn('referral_number', $realReferralNumbers)
+            ->when($doctorHospitalIds !== null, function ($query) use ($doctorAccess, $user): void {
+                $doctorAccess->applyReferralScope($query, $user);
+            })
             ->latest()
             ->get();
 
@@ -1548,8 +1568,10 @@ class ReferralController extends Controller
     public function show(Request $request, int $id)
     {
         $user = auth()->user();
+        $doctorAccess = app(HospitalDoctorAccess::class);
+        $doctorHospitalIds = $doctorAccess->hospitalIds($user);
 
-        if (!$user->can('View Referral')) {
+        if (!$doctorAccess->canViewReferrals($user)) {
             return response()->json([
                 'message' => 'Forbidden',
                 'statusCode' => 403
@@ -1582,10 +1604,49 @@ class ReferralController extends Controller
             },
             'hospital.referralType',
             'referralFlights',
+            'hospitalLetters' => function ($query) use ($doctorHospitalIds): void {
+                if ($doctorHospitalIds !== null) {
+                    // A hospital user can see the follow-up summary but not
+                    // the uploaded official letter path.
+                    $query->select([
+                        'letter_id',
+                        'referral_id',
+                        'content_summary',
+                        'next_appointment_date',
+                        'outcome',
+                        'dg_approval_status',
+                        'proposed_hospital_id',
+                        'proposed_by',
+                        'dg_approval_requested_at',
+                        'dg_approved_by',
+                        'dg_approved_at',
+                        'dg_comments',
+                        'transferred_referral_id',
+                        'is_printed',
+                        'printed_at',
+                        'printed_by',
+                        'print_count',
+                        'last_printed_language',
+                        'created_at',
+                        'updated_at',
+                    ]);
+                }
+            },
+            'hospitalLetters.proposedHospital',
+            'hospitalLetters.proposedBy',
+            'hospitalLetters.dgApprovedBy',
             'hospitalLetters.printedBy',
             'referralLetters.printedBy',
-            'parent',
-            'children',
+            'parent' => function ($query) use ($doctorAccess, $user, $doctorHospitalIds): void {
+                if ($doctorHospitalIds !== null) {
+                    $doctorAccess->applyReferralScope($query, $user);
+                }
+            },
+            'children' => function ($query) use ($doctorAccess, $user, $doctorHospitalIds): void {
+                if ($doctorHospitalIds !== null) {
+                    $doctorAccess->applyReferralScope($query, $user);
+                }
+            },
             'bills',
             'confirmedBy',
             'creator',
@@ -1604,6 +1665,13 @@ class ReferralController extends Controller
                 ->first();
 
             if (!$referral) {
+                return response()->json([
+                    'message' => 'Referral not found',
+                    'statusCode' => 404,
+                ], 404);
+            }
+
+            if (! $doctorAccess->canAccessReferral($user, $referral)) {
                 return response()->json([
                     'message' => 'Referral not found',
                     'statusCode' => 404,
@@ -1700,15 +1768,24 @@ class ReferralController extends Controller
             // new
             $hasReferral = $history->referrals()->exists();
 
-            $latestReferral = $history->referrals()
+            $latestReferralQuery = $history->referrals()
                 ->with([
                     'hospital.referralType',
                     'referralLetters',
                     'confirmedBy',
                     'creator',
-                ])
-                ->latest()
-                ->first();
+                ]);
+            if ($doctorHospitalIds !== null) {
+                $doctorAccess->applyReferralScope($latestReferralQuery, $user);
+            }
+            $latestReferral = $latestReferralQuery->latest()->first();
+
+            if ($doctorHospitalIds !== null && ! $latestReferral) {
+                return response()->json([
+                    'message' => 'History not found',
+                    'statusCode' => 404,
+                ], 404);
+            }
 
             $hasReferral = !is_null($latestReferral);
 
@@ -1825,9 +1902,10 @@ class ReferralController extends Controller
     public function getHospitalLettersByReferralId($id)
     {
         $user = auth()->user();
-        if (
-            !$user->can('View Referral')
-        ) {
+        $doctorAccess = app(HospitalDoctorAccess::class);
+        $doctorHospitalIds = $doctorAccess->hospitalIds($user);
+
+        if (! $doctorAccess->canViewReferrals($user)) {
             return response([
                 'message' => 'Forbidden',
                 'statusCode' => 403
@@ -1844,8 +1922,21 @@ class ReferralController extends Controller
             ], 404);
         }
 
+        if (! $doctorAccess->canAccessReferral($user, $referral)) {
+            // Do not reveal that a referral exists at another facility.
+            return response()->json([
+                'message' => 'Referral not found',
+                'statusCode' => 404
+            ], 404);
+        }
+
         // Follow every generation, but never cross a patient or medical-history case.
         $referrals = app(\App\Services\TransferReferralService::class)->chain($referral);
+        if ($doctorHospitalIds !== null) {
+            $referrals = $referrals
+                ->filter(fn ($relatedReferral): bool => $doctorAccess->canAccessReferral($user, $relatedReferral))
+                ->values();
+        }
         $referrals->load([
             'patient.geographicalLocation',
             'patient.patientList',
@@ -1853,6 +1944,9 @@ class ReferralController extends Controller
             'reason',
             'hospital.referralType',
             'hospitalLetters.followups',
+            'hospitalLetters.proposedHospital',
+            'hospitalLetters.proposedBy',
+            'hospitalLetters.dgApprovedBy',
             'hospitalLetters.printedBy',
             'hospitalLetters.transferredReferral.hospital.referralType',
             'hospitalLetters.transferredReferral.referralLetters.printedBy',
@@ -1901,6 +1995,19 @@ class ReferralController extends Controller
         $reason    = $referrals->first()->reason;
         $hospitals = $referrals->pluck('hospital')->unique('hospital_id')->values();
         $letters   = $referrals->pluck('hospitalLetters')->flatten(1)->values();
+        if ($doctorHospitalIds !== null) {
+            // Keep the stored path private while exposing only the metadata
+            // needed to open the file through the authenticated file route.
+            $letters->each(function ($letter): void {
+                $path = str_replace('\\', '/', (string) $letter->letter_file);
+                $letter->setAttribute('has_uploaded_file', $path !== '');
+                $letter->setAttribute(
+                    'uploaded_file_name',
+                    $path !== '' ? basename($path) : null,
+                );
+                $letter->makeHidden(['letter_file']);
+            });
+        }
         foreach ($letters as $letter) {
             if ($letter->outcome !== 'Transferred') continue;
             $transfer = app(\App\Services\TransferReferralService::class)->transferredReferral($letter);
@@ -1919,6 +2026,7 @@ class ReferralController extends Controller
             return [
                 'referral_id'        => $r->referral_id,
                 'parent_referral_id' => $r->parent_referral_id,
+                'patient_histories_id' => $r->patient_histories_id,
                 'hospital_id'        => $r->hospital_id,
                 'hospital'           => $r->hospital,
                 'status'             => $r->status,

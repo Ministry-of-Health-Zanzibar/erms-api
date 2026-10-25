@@ -10,6 +10,7 @@ use App\Models\ReferralLetter;
 use App\Models\Referral;
 use App\Services\Letters\LetterDocumentService;
 use App\Services\TransferReferralService;
+use App\Support\HospitalDoctorAccess;
 use Illuminate\Http\Request;
 
 class LetterDocumentController extends Controller
@@ -22,7 +23,15 @@ class LetterDocumentController extends Controller
     public function referralPdf(Request $request, int $referralId)
     {
         if (!$this->canViewReferralLetter()) {
-            return $this->forbidden();
+            $approvedFollowUp = HospitalLetter::with('referral.patient')
+                ->where('transferred_referral_id', $referralId)
+                ->where('dg_approval_status', 'confirmed')
+                ->latest('letter_id')
+                ->first();
+
+            if (!app(HospitalDoctorAccess::class)->canPrintFollowUpLetter(auth()->user(), $approvedFollowUp)) {
+                return $this->forbidden();
+            }
         }
 
         $letter = $this->documents->findReferralLetter($referralId);
@@ -47,7 +56,15 @@ class LetterDocumentController extends Controller
     public function markReferralPrinted(Request $request, int $referralId)
     {
         if (!$this->canViewReferralLetter()) {
-            return $this->forbidden();
+            $approvedFollowUp = HospitalLetter::with('referral.patient')
+                ->where('transferred_referral_id', $referralId)
+                ->where('dg_approval_status', 'confirmed')
+                ->latest('letter_id')
+                ->first();
+
+            if (!app(HospitalDoctorAccess::class)->canPrintFollowUpLetter(auth()->user(), $approvedFollowUp)) {
+                return $this->forbidden();
+            }
         }
 
         $letter = $this->documents->findReferralLetter($referralId);
@@ -71,18 +88,29 @@ class LetterDocumentController extends Controller
 
     public function followUpPdf(Request $request, int $letterId)
     {
-        if (!$this->canViewFollowUpLetter()) {
+        $hospitalUser = app(HospitalDoctorAccess::class)->deniesFollowUpLetter(auth()->user());
+
+        if (!$this->canViewFollowUpLetter($hospitalUser)) {
             return $this->forbidden();
         }
 
         $letter = $this->documents->findFollowUpLetter($letterId);
 
         if (!$letter) {
-            return response()->json(['message' => 'Follow-up letter not found', 'statusCode' => 404], 404);
+            return $hospitalUser
+                ? $this->forbidden()
+                : response()->json(['message' => 'Follow-up letter not found', 'statusCode' => 404], 404);
+        }
+
+        if (!app(HospitalDoctorAccess::class)->canPrintFollowUpLetter(auth()->user(), $letter)) {
+            return $this->forbidden();
         }
 
         if ($letter->outcome === 'Transferred') {
-            if (! $this->canViewReferralLetter()) return $this->forbidden();
+            if (! $this->canViewReferralLetter()
+                && !app(HospitalDoctorAccess::class)->canPrintFollowUpLetter(auth()->user(), $letter)) {
+                return $this->forbidden();
+            }
             $transfer = app(TransferReferralService::class)->transferredReferral($letter);
             if (! $transfer) return $this->transferNeedsReview();
             return $this->referralPdf($request, $transfer->getKey());
@@ -98,18 +126,29 @@ class LetterDocumentController extends Controller
 
     public function markFollowUpPrinted(Request $request, int $letterId)
     {
-        if (!$this->canViewFollowUpLetter()) {
+        $hospitalUser = app(HospitalDoctorAccess::class)->deniesFollowUpLetter(auth()->user());
+
+        if (!$this->canViewFollowUpLetter($hospitalUser)) {
             return $this->forbidden();
         }
 
         $letter = $this->documents->findFollowUpLetter($letterId);
 
         if (!$letter) {
-            return response()->json(['message' => 'Follow-up letter not found', 'statusCode' => 404], 404);
+            return $hospitalUser
+                ? $this->forbidden()
+                : response()->json(['message' => 'Follow-up letter not found', 'statusCode' => 404], 404);
+        }
+
+        if (!app(HospitalDoctorAccess::class)->canPrintFollowUpLetter(auth()->user(), $letter)) {
+            return $this->forbidden();
         }
 
         if ($letter->outcome === 'Transferred') {
-            if (! $this->canViewReferralLetter()) return $this->forbidden();
+            if (! $this->canViewReferralLetter()
+                && !app(HospitalDoctorAccess::class)->canPrintFollowUpLetter(auth()->user(), $letter)) {
+                return $this->forbidden();
+            }
             $transfer = app(TransferReferralService::class)->transferredReferral($letter);
             if (! $transfer) return $this->transferNeedsReview();
             return $this->markReferralPrinted($request, $transfer->getKey());
@@ -219,11 +258,16 @@ class LetterDocumentController extends Controller
         return $user && ($user->can('View ReferralLetter') || $user->hasAnyRole(['ROLE ADMIN', 'ROLE SUPER ADMIN', 'ROLE SUPERADMIN', 'ROLE DG', 'ROLE DIRECTOR GENERAL']));
     }
 
-    private function canViewFollowUpLetter(): bool
+    private function canViewFollowUpLetter(?bool $hospitalUser = null): bool
     {
         $user = auth()->user();
+        $hospitalUser ??= app(HospitalDoctorAccess::class)->deniesFollowUpLetter($user);
 
-        return $user && ($user->can('View Hospital Letter') || $user->can('View FollowUp') || $user->hasAnyRole(['ROLE ADMIN', 'ROLE SUPER ADMIN', 'ROLE SUPERADMIN', 'ROLE DG', 'ROLE DIRECTOR GENERAL']));
+        return $user
+            && ($user->can('View Hospital Letter')
+                || $user->can('View FollowUp')
+                || $hospitalUser
+                || $user->hasAnyRole(['ROLE ADMIN', 'ROLE SUPER ADMIN', 'ROLE SUPERADMIN', 'ROLE DG', 'ROLE DIRECTOR GENERAL']));
     }
 
     private function canViewPrintHistory(): bool

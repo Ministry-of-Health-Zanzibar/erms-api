@@ -4,6 +4,7 @@ namespace App\Http\Controllers\API\Followups;
 
 use App\Http\Controllers\Controller;
 use App\Models\FollowUp;
+use App\Support\HospitalDoctorAccess;
 use Illuminate\Http\Request;
 use App\Support\Pagination;
 
@@ -12,7 +13,6 @@ class FollowupController extends Controller
     public function __construct()
     {
         $this->middleware('auth:sanctum');
-        $this->middleware('permission:View FollowUp|Create FollowUp|Update FollowUp|Delete FollowUp', ['only' => ['index','store','show','update','destroy']]);
     }
 
     /**
@@ -21,7 +21,10 @@ class FollowupController extends Controller
     public function index(Request $request)
     {
         $user = auth()->user();
-        if (!$user->can('View FollowUp')) {
+        $doctorAccess = app(HospitalDoctorAccess::class);
+        $doctorHospitalIds = $doctorAccess->hospitalIds($user);
+
+        if (!$doctorAccess->canViewFollowUps($user)) {
             return response([
                 'message' => 'Forbidden',
                 'statusCode' => 403
@@ -32,6 +35,8 @@ class FollowupController extends Controller
         $followups = FollowUp::with([
                 'patient:patient_id,name,phone',
                 'hospitalLetter:letter_id,referral_id,outcome,next_appointment_date',
+            'hospitalLetter.referral:referral_id,patient_id,hospital_id,created_by',
+            'hospitalLetter.referral.patient:patient_id,created_by',
             ])
             ->when($search !== '', function ($query) use ($search): void {
                 $term = mb_strtolower($search);
@@ -53,6 +58,11 @@ class FollowupController extends Controller
             ->when($request->filled('date_to'), function ($query) use ($request): void {
                 $query->whereDate('followup_date', '<=', $request->input('date_to'));
             })
+            ->when($doctorHospitalIds !== null, function ($query) use ($doctorAccess, $user): void {
+                $query->whereHas('hospitalLetter.referral', function ($referralQuery) use ($doctorAccess, $user): void {
+                    $doctorAccess->applyReferralScope($referralQuery, $user);
+                });
+            })
             ->latest('followup_id')
             ->paginate(Pagination::perPage($request, 25));
 
@@ -69,6 +79,14 @@ class FollowupController extends Controller
     public function store(Request $request)
     {
         $user = auth()->user();
+        $doctorAccess = app(HospitalDoctorAccess::class);
+        if ($doctorAccess->isHospitalDoctor($user)) {
+            return response()->json([
+                'message' => 'Hospital doctors may view follow-up records only.',
+                'statusCode' => 403,
+            ], 403);
+        }
+
         if (!$user->can('Create FollowUp')) {
             return response([
                 'message' => 'Forbidden',
@@ -103,7 +121,8 @@ class FollowupController extends Controller
     public function show($id)
     {
         $user = auth()->user();
-        if (!$user->can('View FollowUp')) {
+        $doctorAccess = app(HospitalDoctorAccess::class);
+        if (!$doctorAccess->canViewFollowUps($user)) {
             return response([
                 'message' => 'Forbidden',
                 'statusCode' => 403
@@ -113,12 +132,21 @@ class FollowupController extends Controller
         $followup = FollowUp::with([
             'patient:patient_id,name,phone',
             'hospitalLetter:letter_id,referral_id,outcome,next_appointment_date',
+            'hospitalLetter.referral:referral_id,patient_id,hospital_id,created_by',
+            'hospitalLetter.referral.patient:patient_id,created_by',
         ])->find($id);
 
         if (!$followup) {
             return response()->json([
                 'message' => 'FollowUp not found',
                 'statusCode' => 404
+            ], 404);
+        }
+
+        if (! $doctorAccess->canAccessReferral($user, $followup->hospitalLetter?->referral)) {
+            return response()->json([
+                'message' => 'FollowUp not found',
+                'statusCode' => 404,
             ], 404);
         }
 
@@ -134,6 +162,14 @@ class FollowupController extends Controller
     public function update(Request $request, $id)
     {
         $user = auth()->user();
+        $doctorAccess = app(HospitalDoctorAccess::class);
+        if ($doctorAccess->isHospitalDoctor($user)) {
+            return response()->json([
+                'message' => 'Hospital doctors may view follow-up records only.',
+                'statusCode' => 403,
+            ], 403);
+        }
+
         if (!$user->can('Update FollowUp')) {
             return response([
                 'message' => 'Forbidden',
@@ -179,6 +215,14 @@ class FollowupController extends Controller
     public function destroy($id)
     {
         $user = auth()->user();
+        $doctorAccess = app(HospitalDoctorAccess::class);
+        if ($doctorAccess->isHospitalDoctor($user)) {
+            return response()->json([
+                'message' => 'Hospital doctors may view follow-up records only.',
+                'statusCode' => 403,
+            ], 403);
+        }
+
         if (!$user->can('Delete FollowUp')) {
             return response([
                 'message' => 'Forbidden',

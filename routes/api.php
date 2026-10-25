@@ -46,6 +46,8 @@ Route::post('reset-forgot-password', [App\Http\Controllers\API\User\UserProfileC
 Route::middleware(['auth:sanctum', 'not.blocked'])->group(function () {
 
     Route::get('checkPassword', [App\Http\Controllers\API\User\UserProfileCotroller::class, 'index'])->name('checkPassword');
+    Route::get('profile', [App\Http\Controllers\API\User\UserProfileCotroller::class, 'profile'])->name('profile');
+    Route::patch('profile', [App\Http\Controllers\API\User\UserProfileCotroller::class, 'updateProfile'])->name('profile.update');
     Route::post('changePassword', [App\Http\Controllers\API\User\UserProfileCotroller::class, 'change_password'])->name('changePassword');
     Route::post('resetPassword', [App\Http\Controllers\API\User\UserProfileCotroller::class, 'resetPassword'])->name('resetPassword');
     // Kept as a compatibility alias; both endpoints use the protected,
@@ -155,11 +157,17 @@ Route::middleware(['auth:sanctum', 'not.blocked'])->group(function () {
     Route::post('patient-lists/assign-patients/{id}', [MedicalBoadController::class, 'assignPatientsToList']);
 
     // Hospital Letters
+    Route::get('hospital-letters/{letter_id}/file', [HospitalLetterController::class, 'file']);
     Route::resource('hospital-letters', HospitalLetterController::class);
     Route::post('hospital-letters/update/{followup_id}', [HospitalLetterController::class, 'updateHospitalLetter']);
 
     // Followups
     Route::resource('followups', FollowupController::class);
+
+    // Hospital-user follow-up proposals are reviewed by the DG before the
+    // existing letter/transfer side effects and print authorization apply.
+    Route::post('hospital-letters/{letter_id}/follow-up-approval', [HospitalLetterController::class, 'approveFollowUp'])
+        ->whereNumber('letter_id');
 
     // Backend-generated referral and follow-up letters
     Route::prefix('letter-documents')->group(function () {

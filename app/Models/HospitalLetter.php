@@ -22,6 +22,13 @@ class HospitalLetter extends Model
         'next_appointment_date',
         'letter_file',
         'outcome',
+        'dg_approval_status',
+        'proposed_hospital_id',
+        'proposed_by',
+        'dg_approval_requested_at',
+        'dg_approved_by',
+        'dg_approved_at',
+        'dg_comments',
         'transferred_referral_id',
         'submission_key',
         'is_printed',
@@ -34,6 +41,8 @@ class HospitalLetter extends Model
     protected $casts = [
         'is_printed' => 'boolean',
         'printed_at' => 'datetime',
+        'dg_approval_requested_at' => 'datetime',
+        'dg_approved_at' => 'datetime',
         'print_count' => 'integer',
     ];
 
@@ -50,6 +59,21 @@ class HospitalLetter extends Model
     public function transferredReferral()
     {
         return $this->belongsTo(Referral::class, 'transferred_referral_id', 'referral_id');
+    }
+
+    public function proposedHospital()
+    {
+        return $this->belongsTo(Hospital::class, 'proposed_hospital_id', 'hospital_id');
+    }
+
+    public function proposedBy()
+    {
+        return $this->belongsTo(User::class, 'proposed_by');
+    }
+
+    public function dgApprovedBy()
+    {
+        return $this->belongsTo(User::class, 'dg_approved_by');
     }
 
     public function printedBy()

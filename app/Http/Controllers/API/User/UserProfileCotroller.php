@@ -12,6 +12,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class UserProfileCotroller extends Controller
 {
@@ -65,6 +66,83 @@ class UserProfileCotroller extends Controller
             ->get();
 
         return $staffs; // turn the array into a string
+    }
+
+    /**
+     * Return the authenticated user's editable profile and read-only access context.
+     */
+    public function profile()
+    {
+        $user = auth()->user()->load(['roles', 'hospitals']);
+
+        return response()->json([
+            'data' => $this->profileData($user),
+            'statusCode' => 200,
+        ]);
+    }
+
+    /**
+     * Update only the authenticated user's personal information.
+     * Roles, permissions, hospital assignments, status, and password remain protected.
+     */
+    public function updateProfile(Request $request)
+    {
+        $user = auth()->user();
+
+        $validated = $request->validate([
+            'first_name' => ['required', 'string', 'max:100'],
+            'middle_name' => ['required', 'string', 'max:100'],
+            'last_name' => ['required', 'string', 'max:100'],
+            'address' => ['required', 'string', 'max:255'],
+            'phone_no' => [
+                'required',
+                'string',
+                'max:20',
+                Rule::unique('users', 'phone_no')->ignore($user->id),
+            ],
+            'email' => [
+                'required',
+                'email',
+                'max:255',
+                Rule::unique('users', 'email')->ignore($user->id),
+            ],
+            'gender' => ['required', 'string', 'max:15'],
+            'date_of_birth' => ['required', 'date', 'before_or_equal:today'],
+        ]);
+
+        $user->fill($validated);
+        $user->save();
+        $user->load(['roles', 'hospitals']);
+
+        return response()->json([
+            'message' => 'Profile updated successfully.',
+            'data' => $this->profileData($user),
+            'statusCode' => 200,
+        ]);
+    }
+
+    private function profileData(User $user): array
+    {
+        return [
+            'id' => $user->id,
+            'first_name' => $user->first_name,
+            'middle_name' => $user->middle_name,
+            'last_name' => $user->last_name,
+            'full_name' => $user->full_name,
+            'email' => $user->email,
+            'phone_no' => $user->phone_no,
+            'address' => $user->address,
+            'gender' => $user->gender,
+            'date_of_birth' => $user->date_of_birth,
+            'roles' => $user->getRoleNames()->values()->all(),
+            'hospitals' => $user->hospitals->map(function ($hospital): array {
+                return [
+                    'hospital_id' => $hospital->hospital_id,
+                    'hospital_name' => $hospital->hospital_name,
+                    'hospital_role' => $hospital->pivot->role ?? null,
+                ];
+            })->values()->all(),
+        ];
     }
 
     /**

@@ -7,6 +7,7 @@ use App\Models\Hospital;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use App\Support\HospitalDoctorAccess;
 
 class HospitalController extends Controller
 {
@@ -61,7 +62,9 @@ class HospitalController extends Controller
     public function index()
     {
         $user = auth()->user();
-        if (!$user->can('View Hospital') && !$user->can('View Report')) {
+        if (!$user->can('View Hospital')
+            && !$user->can('View Report')
+            && !app(HospitalDoctorAccess::class)->isHospitalDoctor($user)) {
             return response([
                 'message' => 'Forbidden',
                 'statusCode' => 403
@@ -86,7 +89,7 @@ class HospitalController extends Controller
     public function getInternalReferralHospitals()
     {
         $user = auth()->user();
-        if (!$user->can('View Hospital')) {
+        if (!$user->can('View Hospital') && !app(HospitalDoctorAccess::class)->isHospitalDoctor($user)) {
             return response([
                 'message' => 'Forbidden',
                 'statusCode' => 403
