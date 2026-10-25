@@ -19,6 +19,7 @@ class Referral extends Model
     protected $fillable = [
         'patient_id',
         'patient_histories_id',
+        'telemedicine_request_id',
         'parent_referral_id',
         'referral_number',
         'hospital_id',
@@ -79,6 +80,11 @@ class Referral extends Model
     public function patientHistory()
     {
         return $this->belongsTo(PatientHistory::class, 'patient_histories_id', 'patient_histories_id');
+    }
+
+    public function telemedicineRequest()
+    {
+        return $this->belongsTo(TelemedicineRequest::class, 'telemedicine_request_id', 'telemedicine_request_id');
     }
 
     public function bills()

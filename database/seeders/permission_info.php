@@ -131,6 +131,13 @@ class permission_info extends Seeder
 
             'View History',
 
+            'View Telemedicine',
+            'Create Telemedicine Request',
+            'Schedule Telemedicine Appointment',
+            'Review Telemedicine Appointment',
+            'Manage Telemedicine Report',
+            'Record Telemedicine Decision',
+
             'View Audit Logs',
             'Undo Patient History Workflow',
             'Block User',

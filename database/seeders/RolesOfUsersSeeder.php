@@ -139,6 +139,8 @@ class RolesOfUsersSeeder extends Seeder
             'View ReferralType',
             'View Diagnoses',
 
+            'View Telemedicine',
+
             'View Reason',
 
             'Director General Report',
@@ -222,6 +224,9 @@ class RolesOfUsersSeeder extends Seeder
 
             'Verification Report',
             'View Report',
+
+            'View Telemedicine',
+            'Schedule Telemedicine Appointment',
         ];
 
         foreach ($billVerificationPermissions as $perm) {
@@ -255,6 +260,12 @@ class RolesOfUsersSeeder extends Seeder
             'View Reason',
             'View Diagnoses',
             'View Location',
+
+            'View Telemedicine',
+            'Create Telemedicine Request',
+            'Review Telemedicine Appointment',
+            'Manage Telemedicine Report',
+            'Record Telemedicine Decision',
         ];
 
         foreach ($hospitalUserPermissions as $perm) {
@@ -285,6 +296,9 @@ class RolesOfUsersSeeder extends Seeder
             'View History',
             'View Reason',
             'View Location',
+
+            'View Telemedicine',
+            'Create Telemedicine Request',
         ];
 
         foreach ($mkurugenziTibaPermissions as $perm) {
@@ -295,5 +309,28 @@ class RolesOfUsersSeeder extends Seeder
         if ($hasCreatedBy) $mkurugenziTibaRoleData['created_by'] = 1;
         $mkurugenziTibaRole = Role::firstOrCreate(['name' => 'ROLE MKURUGENZI TIBA'], $mkurugenziTibaRoleData);
         $mkurugenziTibaRole->syncPermissions($mkurugenziTibaPermissions);
+
+        /**
+         * =============================
+         * 7 ROLE TELEMEDICINE COORDINATOR
+         * =============================
+         */
+        $telemedicinePermissions = [
+            'View Telemedicine',
+            'Create Telemedicine Request',
+            'Schedule Telemedicine Appointment',
+            'Review Telemedicine Appointment',
+            'Manage Telemedicine Report',
+            'Record Telemedicine Decision',
+        ];
+
+        foreach ($telemedicinePermissions as $perm) {
+            Permission::firstOrCreate(['name' => $perm, 'guard_name' => 'web']);
+        }
+
+        $telemedicineRoleData = ['name' => 'ROLE TELEMEDICINE COORDINATOR', 'guard_name' => 'web'];
+        if ($hasCreatedBy) $telemedicineRoleData['created_by'] = 1;
+        $telemedicineRole = Role::firstOrCreate(['name' => 'ROLE TELEMEDICINE COORDINATOR'], $telemedicineRoleData);
+        $telemedicineRole->syncPermissions($telemedicinePermissions);
     }
 }

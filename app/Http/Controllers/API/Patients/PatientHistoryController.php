@@ -8,9 +8,11 @@ use App\Models\Diagnosis;
 use App\Models\Patient;
 use App\Models\PatientHistory;
 use App\Models\Referral;
+use App\Models\TelemedicineRequest;
 use DB;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 use App\Services\PatientHistoryWorkflowService;
 use App\Services\ReasonResolver;
@@ -47,6 +49,18 @@ use App\Support\SuperAdminAccess;
  */
 class PatientHistoryController extends Controller
 {
+    /**
+     * A telemedicine request is a separate branch from the normal DCS to DG
+     * handover. The DCS may continue the normal handover only after the
+     * telemedicine report has become available.
+     */
+    private const TELEMEDICINE_FORWARD_BLOCKING_STATUSES = [
+        'registered',
+        'awaiting_bill_verification',
+        'appointment_requested',
+        'appointment_confirmed',
+    ];
+
     public function __construct()
     {
         $this->middleware('auth:sanctum');
@@ -545,6 +559,24 @@ class PatientHistoryController extends Controller
                 'message' => 'Patient history not found',
                 'statusCode' => 404,
             ], 404);
+        }
+
+        if (
+            Schema::hasTable('telemedicine_requests')
+            && (SuperAdminAccess::allowed($user) || $user->hasAnyRole(['ROLE MKURUGENZI TIBA', 'ROLE SUPERVISOR']))
+        ) {
+            $telemedicineRequest = TelemedicineRequest::query()
+                ->where('patient_histories_id', $history->patient_histories_id)
+                ->latest('telemedicine_request_id')
+                ->first(['telemedicine_request_id', 'reference', 'request_type', 'status']);
+
+            $history->setAttribute('telemedicine_workflow', $telemedicineRequest ? [
+                'telemedicine_request_id' => $telemedicineRequest->telemedicine_request_id,
+                'reference' => $telemedicineRequest->reference,
+                'request_type' => $telemedicineRequest->request_type,
+                'status' => $telemedicineRequest->status,
+                'blocks_dg_forward' => in_array($telemedicineRequest->status, self::TELEMEDICINE_FORWARD_BLOCKING_STATUSES, true),
+            ] : null);
         }
 
         // --- HOSPITAL LOGIC ---
@@ -1350,6 +1382,15 @@ class PatientHistoryController extends Controller
             ], 422);
         }
 
+        $isFirstTime = empty($history->mkurugenzi_tiba_comments);
+        if ($isFirstTime && $this->hasPendingTelemedicineRequest($history->patient_histories_id)) {
+            return response()->json([
+                'status' => false,
+                'message' => 'The telemedicine report is not available yet. Review the report before forwarding this case to the DG.',
+                'statusCode' => 409,
+            ], 409);
+        }
+
         try {
             DB::beginTransaction();
             $history = PatientHistory::query()
@@ -1371,6 +1412,18 @@ class PatientHistoryController extends Controller
 
             // Check if comments are empty BEFORE we assign the new ones.
             $isFirstTime = empty($history->mkurugenzi_tiba_comments);
+
+            // Repeat the check after locking the history so a concurrent
+            // telemedicine registration cannot be bypassed by this handover.
+            if ($isFirstTime && $this->hasPendingTelemedicineRequest($history->patient_histories_id)) {
+                DB::rollBack();
+
+                return response()->json([
+                    'status' => false,
+                    'message' => 'The telemedicine report is not available yet. Review the report before forwarding this case to the DG.',
+                    'statusCode' => 409,
+                ], 409);
+            }
 
             // Save Mkurugenzi Tiba comments
             $history->mkurugenzi_tiba_comments = $request->mkurugenzi_tiba_comments;
@@ -1451,6 +1504,18 @@ class PatientHistoryController extends Controller
             DB::rollBack();
             return Helper::serverError($e, 'Referral approval update failed.');
         }
+    }
+
+    private function hasPendingTelemedicineRequest(int $patientHistoryId): bool
+    {
+        if (! Schema::hasTable('telemedicine_requests')) {
+            return false;
+        }
+
+        return TelemedicineRequest::query()
+            ->where('patient_histories_id', $patientHistoryId)
+            ->whereIn('status', self::TELEMEDICINE_FORWARD_BLOCKING_STATUSES)
+            ->exists();
     }
 
     public function getMkurugenziComments($id)

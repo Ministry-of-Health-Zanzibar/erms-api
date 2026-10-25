@@ -24,6 +24,7 @@ use App\Http\Controllers\API\Report\ReportController;
 use App\Http\Controllers\API\Report\ReportingController;
 use App\Http\Controllers\API\Setup\DiagnosisController;
 use App\Http\Controllers\API\Treatments\TreatmentController;
+use App\Http\Controllers\API\Telemedicine\TelemedicineController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -242,6 +243,26 @@ Route::middleware(['auth:sanctum', 'not.blocked'])->group(function () {
         Route::get('/allowed-to-assign/patients', [PatientHistoryController::class, 'getPatientToBeAssignedToMedicalBoard']);
     });
     Route::post('patient-history-workflow-events/{eventId}/undo', [App\Http\Controllers\API\PatientHistoryWorkflowController::class, 'undo'])->whereNumber('eventId');
+
+    // Telemedicine is an additive branch connected to the existing patient
+    // history, referral, hospital, document, and conversation workflows.
+    Route::prefix('telemedicine')->group(function (): void {
+        Route::get('patients', [TelemedicineController::class, 'patients']);
+        Route::get('requests', [TelemedicineController::class, 'index']);
+        Route::get('requests/{id}', [TelemedicineController::class, 'show'])->whereNumber('id');
+        Route::post('requests', [TelemedicineController::class, 'store']);
+        Route::get('hospitals', [TelemedicineController::class, 'hospitals']);
+        Route::get('hospitals/{hospitalId}/coordinators', [TelemedicineController::class, 'coordinators'])->whereNumber('hospitalId');
+        Route::get('hospitals/{hospitalId}/doctors', [TelemedicineController::class, 'doctors'])->whereNumber('hospitalId');
+        Route::post('requests/{id}/appointment', [TelemedicineController::class, 'schedule'])->whereNumber('id');
+        Route::post('requests/{id}/appointment-decision', [TelemedicineController::class, 'appointmentDecision'])->whereNumber('id');
+        Route::post('requests/{id}/report', [TelemedicineController::class, 'storeReport'])->whereNumber('id');
+        Route::post('requests/{id}/decision', [TelemedicineController::class, 'recordDecision'])->whereNumber('id');
+        Route::get('requests/{requestId}/documents/{documentId}', [TelemedicineController::class, 'documentFile'])
+            ->whereNumber('requestId')->whereNumber('documentId')->name('telemedicine.documents.file');
+        Route::get('requests/{requestId}/reports/{reportId}/file', [TelemedicineController::class, 'reportFile'])
+            ->whereNumber('requestId')->whereNumber('reportId')->name('telemedicine.reports.file');
+    });
 
     // Patient History Conversations
     Route::prefix('patient-history-conversations')->group(function () {

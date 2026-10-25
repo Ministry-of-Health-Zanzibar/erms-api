@@ -269,6 +269,7 @@ class PatientHistoryWorkflowService
             $after = $metadata['after'] ?? [];
             $this->lockSnapshotRows($before, $after);
             $this->restoreSnapshot($before, $after);
+            $this->rollbackTelemedicineBranch($metadata['context'] ?? [], $actor);
 
             $event->forceFill([
                 'undone_at' => now(),
@@ -550,6 +551,60 @@ class PatientHistoryWorkflowService
             $query->update(['deleted_at' => now()]);
         } else {
             $query->delete();
+        }
+    }
+
+    /**
+     * A DCS decision can create an additive telemedicine request. Keep the
+     * existing workflow undo operation consistent with that branch without
+     * deleting clinical data. If the telemedicine request has already moved
+     * to appointment/report/decision work, refuse the undo rather than
+     * silently invalidating work another team has completed.
+     */
+    private function rollbackTelemedicineBranch(array $context, User $actor): void
+    {
+        $telemedicineRequestId = $context['telemedicine_request_id'] ?? null;
+        if (! $telemedicineRequestId || ! Schema::hasTable('telemedicine_requests')) {
+            return;
+        }
+
+        $telemedicineRequest = DB::table('telemedicine_requests')
+            ->where('telemedicine_request_id', $telemedicineRequestId)
+            ->lockForUpdate()
+            ->first();
+
+        if (! $telemedicineRequest || $telemedicineRequest->deleted_at !== null) {
+            return;
+        }
+
+        if ($telemedicineRequest->status === 'cancelled') {
+            return;
+        }
+
+        if (! in_array($telemedicineRequest->status, ['registered', 'awaiting_bill_verification'], true)) {
+            throw new RuntimeException('The telemedicine request has progressed and the DCS workflow event cannot be undone safely.');
+        }
+
+        $now = now();
+        DB::table('telemedicine_requests')
+            ->where('telemedicine_request_id', $telemedicineRequestId)
+            ->update([
+                'status' => 'cancelled',
+                'deleted_at' => $now,
+                'updated_at' => $now,
+            ]);
+
+        if (Schema::hasTable('telemedicine_workflow_events')) {
+            DB::table('telemedicine_workflow_events')->insert([
+                'telemedicine_request_id' => $telemedicineRequestId,
+                'action' => 'dcs_approval_undone',
+                'from_status' => $telemedicineRequest->status,
+                'to_status' => 'cancelled',
+                'actor_id' => $actor->getKey(),
+                'metadata' => json_encode(['reason' => 'Parent DCS workflow event undone']),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
         }
     }
 }

@@ -173,6 +173,11 @@ class PatientHistory extends Model
         return $this->hasMany(Referral::class, 'patient_histories_id', 'patient_histories_id');
     }
 
+    public function telemedicineRequests()
+    {
+        return $this->hasMany(TelemedicineRequest::class, 'patient_histories_id', 'patient_histories_id');
+    }
+
     /**
      * Conversations in this patient history
      */
