@@ -1949,6 +1949,7 @@ class ReferralController extends Controller
             'hospitalLetters.dgApprovedBy',
             'hospitalLetters.printedBy',
             'hospitalLetters.transferredReferral.hospital.referralType',
+            'hospitalLetters.transferredReferral.referralFlights',
             'hospitalLetters.transferredReferral.referralLetters.printedBy',
         ]);
 
@@ -2014,6 +2015,8 @@ class ReferralController extends Controller
             $document = $transfer?->referralLetters;
             $letter->setAttribute('transfer_letter', $document ? [
                 'referral_id' => $transfer->getKey(),
+                'hospital' => $transfer->hospital,
+                'referral_flights' => $transfer->referralFlights,
                 'referral_letter_id' => $document->getKey(),
                 'is_printed' => (bool) $document->is_printed,
                 'printed_at' => $document->printed_at,

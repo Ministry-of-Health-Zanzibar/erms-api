@@ -41,6 +41,8 @@ class LetterDocumentService
         return HospitalLetter::with([
             'referral.patient',
             'referral.hospital.referralType',
+            'transferredReferral.hospital.referralType',
+            'transferredReferral.referralFlights',
             'transferredReferral.referralLetters',
         ])->find($letterId);
     }

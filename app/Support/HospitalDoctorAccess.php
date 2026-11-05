@@ -159,6 +159,17 @@ final class HospitalDoctorAccess
 
         $letter->loadMissing('referral.patient');
 
+        if ($letter->outcome === 'Transferred') {
+            $letter->loadMissing('transferredReferral.hospital.referralType', 'transferredReferral.referralFlights');
+            $referralType = strtoupper(trim((string) (
+                $letter->transferredReferral?->hospital?->referralType?->referral_type_code ?? ''
+            )));
+
+            if ($referralType === 'REFTYPE2' && ! $letter->transferredReferral?->referralFlights?->isNotEmpty()) {
+                return false;
+            }
+        }
+
         return $letter->dg_approval_status === 'confirmed'
             && $this->canAccessReferral($user, $letter->referral);
     }
