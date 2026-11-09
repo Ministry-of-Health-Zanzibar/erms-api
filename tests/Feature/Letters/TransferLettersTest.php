@@ -77,6 +77,7 @@ class TransferLettersTest extends TestCase
         });
         Schema::create('hospital_letters', function (Blueprint $t): void {
             $t->bigIncrements('letter_id'); $t->unsignedBigInteger('referral_id'); $t->text('content_summary')->nullable();
+            $t->string('dg_approval_status')->nullable();
             $t->string('next_appointment_date')->nullable(); $t->string('letter_file')->nullable(); $t->string('outcome');
             $t->boolean('is_printed')->default(false); $t->timestamp('printed_at')->nullable(); $t->integer('printed_by')->nullable();
             $t->integer('print_count')->default(0); $t->string('last_printed_language')->nullable(); $t->timestamps(); $t->softDeletes();

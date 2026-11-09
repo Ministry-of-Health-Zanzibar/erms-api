@@ -139,6 +139,7 @@ class AuditLogController extends Controller
             'description' => $activity->description,
             'subject_type' => $activity->subject_type,
             'subject_id' => $activity->subject_id,
+            'actor_snapshot' => $properties['actor_snapshot'] ?? null,
             'causer' => $causer ? [
                 'id' => $causer->id,
                 'name' => $causer->full_name ?: $causer->email,

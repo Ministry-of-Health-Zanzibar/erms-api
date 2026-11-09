@@ -7,6 +7,8 @@ use App\Http\Helpers\Helper;
 use App\Mail\UserCredentialsMail;
 use App\Models\User;
 use App\Services\UserBlockService;
+use App\Services\UserRoleService;
+use App\Models\UserRoleChange;
 use App\Support\SuperAdminAccess;
 use App\Support\Pagination;
 use DB;
@@ -255,16 +257,7 @@ class UsersCotroller extends Controller
                     ]);
 
                     // 3️⃣ Assign role
-                    $user->assignRole($request->role_id);
-
-                    // 4️⃣ Give permissions
-                    $permissions = DB::table('role_has_permissions')
-                        ->join('permissions', 'permissions.id', '=', 'role_has_permissions.permission_id')
-                        ->select('permissions.id', 'permissions.name')
-                        ->where('role_has_permissions.role_id', '=', $request->role_id)
-                        ->get();
-
-                    $user->givePermissionTo($permissions);
+                    app(UserRoleService::class)->assign($user, Role::findOrFail((int) $request->role_id));
 
                     // 5️⃣ Send credentials email
                     Mail::to($user->email)->send(new UserCredentialsMail($user, $password_plain));
@@ -380,6 +373,26 @@ class UsersCotroller extends Controller
         }
     }
 
+    public function roleHistory(int $userId)
+    {
+        $actor = auth()->user();
+        if (! SuperAdminAccess::allowed($actor, 'View User')
+            && ! $actor->can('Update User')
+            && ! $actor->hasAnyRole(['ROLE ADMIN', 'ROLE NATIONAL'])) {
+            return response()->json(['message' => 'Forbidden', 'statusCode' => 403], 403);
+        }
+
+        $history = UserRoleChange::where('user_id', $userId)->latest('id')
+            ->paginate(Pagination::perPage(request(), 10));
+
+        return response()->json([
+            'data' => $history->items(),
+            'meta' => Pagination::meta($history),
+            'statusCode' => 200,
+        ]);
+    }
+
+
     /**
      * @OA\Put(
      *     path="/api/userAccounts/{id}",
@@ -450,6 +463,7 @@ class UsersCotroller extends Controller
                 'phone_no' => ['required', 'string', 'max:30'],
                 'gender' => ['required', 'string', 'max:30'],
                 'date_of_birth' => ['required', 'date'],
+                'role_id' => ['sometimes', 'required', 'integer', 'exists:roles,id'],
             ]);
 
             if ($validator->fails()) {
@@ -461,17 +475,21 @@ class UsersCotroller extends Controller
             }
 
             try {
-                $users = User::findOrFail($id);
-                $users->first_name = $request->first_name;
-                $users->middle_name = $request->middle_name;
-                $users->last_name = $request->last_name;
-                $users->address = $request->address;
-                $users->gender = $request->gender;
-                $users->phone_no = $request->phone_no;
-                $users->date_of_birth = $request->date_of_birth;
-                $users->update();
+                DB::transaction(function () use ($id, $request): void {
+                    $users = User::whereKey($id)->lockForUpdate()->firstOrFail();
+                    $users->first_name = $request->first_name;
+                    $users->middle_name = $request->middle_name;
+                    $users->last_name = $request->last_name;
+                    $users->address = $request->address;
+                    $users->gender = $request->gender;
+                    $users->phone_no = $request->phone_no;
+                    $users->date_of_birth = $request->date_of_birth;
+                    $users->update();
 
-                // $users->assignRole($request->roleID);
+                    if ($request->has('role_id')) {
+                        app(UserRoleService::class)->assign($users, Role::findOrFail((int) $request->role_id));
+                    }
+                });
 
                 $successResponse = [
                     'message' => 'User Account Updated Successfully',

@@ -63,6 +63,7 @@ Route::middleware(['auth:sanctum', 'not.blocked'])->group(function () {
     Route::resource('countries', App\Http\Controllers\API\Setup\CountriesController::class);
 
     Route::get('userAccounts/board-members', [App\Http\Controllers\API\User\UsersCotroller::class, 'getBoardMembers']);
+    Route::get('userAccounts/{userId}/role-history', [App\Http\Controllers\API\User\UsersCotroller::class, 'roleHistory'])->whereNumber('userId');
     Route::get('unBlockUser/{userId}', [App\Http\Controllers\API\User\UsersCotroller::class, 'unBlockUser']);
     Route::resource('userAccounts', App\Http\Controllers\API\User\UsersCotroller::class);
     Route::resource('roles', App\Http\Controllers\API\User\RolesCotroller::class);
