@@ -105,8 +105,10 @@ class UserRoleUpdateTest extends TestCase
         $this->newRole->givePermissionTo($new);
         $this->user->givePermissionTo([$old, $custom]);
 
-        $this->putJson('/api/userAccounts/'.$this->user->id, $this->payload())->assertOk()->assertJsonPath('statusCode', 201);
+        $this->putJson('/api/userAccounts/'.$this->user->id, $this->payload(['email' => 'updated@example.test']))
+            ->assertOk()->assertJsonPath('statusCode', 201);
         $user = $this->user->fresh();
+        $this->assertSame('updated@example.test', $user->email);
         $this->assertTrue($user->hasRole($this->newRole));
         $this->assertFalse($user->hasRole($this->oldRole));
         $this->assertFalse($user->hasPermissionTo($old));
@@ -135,6 +137,45 @@ class UserRoleUpdateTest extends TestCase
         $this->putJson('/api/userAccounts/'.$this->user->id, $payload)->assertOk();
         $this->assertDatabaseCount('user_role_changes', 0);
         $this->assertTrue($this->user->fresh()->hasRole($this->oldRole));
+        $this->assertSame($this->user->email, $this->user->fresh()->email);
+    }
+
+    public function test_email_update_is_saved_without_changing_the_role(): void
+    {
+        $this->putJson('/api/userAccounts/'.$this->user->id, $this->payload([
+            'email' => 'new-address@example.test',
+            'role_id' => $this->oldRole->id,
+        ]))->assertOk()->assertJsonPath('statusCode', 201);
+
+        $user = $this->user->fresh();
+        $this->assertSame('new-address@example.test', $user->email);
+        $this->assertTrue($user->hasRole($this->oldRole));
+        $this->assertDatabaseCount('user_role_changes', 0);
+    }
+
+    public function test_saving_the_current_email_is_allowed(): void
+    {
+        $this->putJson('/api/userAccounts/'.$this->user->id, $this->payload([
+            'email' => $this->user->email,
+            'role_id' => $this->oldRole->id,
+        ]))->assertOk()->assertJsonPath('statusCode', 201);
+
+        $this->assertSame($this->user->email, $this->user->fresh()->email);
+        $this->assertSame('Updated', $this->user->fresh()->first_name);
+    }
+
+    public function test_invalid_or_taken_emails_cannot_change_the_user(): void
+    {
+        foreach (['invalid-email', '', null, $this->admin->email, str_repeat('a', 250).'@example.test'] as $email) {
+            $this->putJson('/api/userAccounts/'.$this->user->id, $this->payload(['email' => $email]))
+                ->assertUnprocessable()->assertJsonValidationErrors(['email']);
+
+            $user = $this->user->fresh();
+            $this->assertSame($this->user->email, $user->email);
+            $this->assertSame('Hospital', $user->first_name);
+            $this->assertTrue($user->hasRole($this->oldRole));
+            $this->assertDatabaseCount('user_role_changes', 0);
+        }
     }
 
     public function test_invalid_role_and_unauthorized_requests_cannot_change_the_user(): void
@@ -161,8 +202,9 @@ class UserRoleUpdateTest extends TestCase
     public function test_a_failed_history_write_rolls_back_profile_and_role_changes(): void
     {
         Schema::rename('user_role_changes', 'unavailable_role_history');
-        $this->putJson('/api/userAccounts/'.$this->user->id, $this->payload())->assertServerError();
+        $this->putJson('/api/userAccounts/'.$this->user->id, $this->payload(['email' => 'rolled-back@example.test']))->assertServerError();
         $this->assertSame('Hospital', $this->user->fresh()->first_name);
+        $this->assertSame($this->user->email, $this->user->fresh()->email);
         $this->assertTrue($this->user->fresh()->hasRole($this->oldRole));
     }
 
