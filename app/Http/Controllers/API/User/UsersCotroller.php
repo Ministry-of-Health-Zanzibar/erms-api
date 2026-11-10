@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 use Validator;
@@ -461,6 +462,7 @@ class UsersCotroller extends Controller
                 'last_name' => ['required', 'string', 'max:100'],
                 'address' => ['required', 'string', 'max:255'],
                 'phone_no' => ['required', 'string', 'max:30'],
+                'email' => ['sometimes', 'required', 'string', 'email', 'max:255', Rule::unique('users', 'email')->ignore((int) $id)],
                 'gender' => ['required', 'string', 'max:30'],
                 'date_of_birth' => ['required', 'date'],
                 'role_id' => ['sometimes', 'required', 'integer', 'exists:roles,id'],
@@ -483,6 +485,9 @@ class UsersCotroller extends Controller
                     $users->address = $request->address;
                     $users->gender = $request->gender;
                     $users->phone_no = $request->phone_no;
+                    if ($request->has('email')) {
+                        $users->email = $request->email;
+                    }
                     $users->date_of_birth = $request->date_of_birth;
                     $users->update();
 
