@@ -130,6 +130,16 @@ class UserRoleUpdateTest extends TestCase
         $this->assertSame([$this->oldRole->name, $this->newRole->name], UserRoleChange::orderBy('id')->get()->map(fn ($row) => $row->previous_roles[0]['name'])->all());
     }
 
+    public function test_unchanged_role_and_profile_only_edits_do_not_create_false_changes(): void
+    {
+        $this->putJson('/api/userAccounts/'.$this->user->id, $this->payload(['role_id' => $this->oldRole->id]))->assertOk();
+        $payload = $this->payload(); unset($payload['role_id']);
+        $this->putJson('/api/userAccounts/'.$this->user->id, $payload)->assertOk();
+        $this->assertDatabaseCount('user_role_changes', 0);
+        $this->assertTrue($this->user->fresh()->hasRole($this->oldRole));
+        $this->assertSame($this->user->email, $this->user->fresh()->email);
+    }
+
     public function test_email_update_is_saved_without_changing_the_role(): void
     {
         $this->putJson('/api/userAccounts/'.$this->user->id, $this->payload([
@@ -166,16 +176,6 @@ class UserRoleUpdateTest extends TestCase
             $this->assertTrue($user->hasRole($this->oldRole));
             $this->assertDatabaseCount('user_role_changes', 0);
         }
-    }
-
-    public function test_unchanged_role_and_profile_only_edits_do_not_create_false_changes(): void
-    {
-        $this->putJson('/api/userAccounts/'.$this->user->id, $this->payload(['role_id' => $this->oldRole->id]))->assertOk();
-        $payload = $this->payload(); unset($payload['role_id']);
-        $this->putJson('/api/userAccounts/'.$this->user->id, $payload)->assertOk();
-        $this->assertDatabaseCount('user_role_changes', 0);
-        $this->assertTrue($this->user->fresh()->hasRole($this->oldRole));
-        $this->assertSame($this->user->email, $this->user->fresh()->email);
     }
 
     public function test_invalid_role_and_unauthorized_requests_cannot_change_the_user(): void
